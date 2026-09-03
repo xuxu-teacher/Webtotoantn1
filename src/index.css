@@ -9,6 +9,8 @@
   --amber: #c17a2b;
   --amber-soft: #f2e2c8;
   --danger: #a13d3d;
+  --ok: #3d7a4a;
+  --shadow: 0 1px 2px rgba(28, 34, 48, 0.04), 0 6px 20px rgba(28, 34, 48, 0.06);
 }
 
 * {
@@ -33,56 +35,103 @@ h3 {
 }
 
 .page {
-  max-width: 1180px;
+  max-width: 1220px;
   margin: 0 auto;
-  padding: 48px 32px 96px;
+  padding: 0 32px 96px;
 }
 
-.page__header {
-  border-bottom: 2px solid var(--indigo-deep);
-  padding-bottom: 28px;
+/* ===== Banner cấu hình (thiếu ANTHROPIC_API_KEY) ===== */
+.config-banner {
+  background: #fbebc8;
+  border-bottom: 1px solid #e2c88a;
+  color: #6b4a10;
+  font-size: 0.88rem;
+  padding: 10px 32px;
+  margin: 0 -32px 0;
+  text-align: center;
+}
+
+.config-banner code {
+  background: rgba(0, 0, 0, 0.08);
+  padding: 1px 6px;
+  font-size: 0.85em;
+}
+
+/* ===== Thanh thương hiệu trên cùng ===== */
+.topbar {
+  padding: 32px 0 24px;
+}
+
+.topbar__brand {
+  display: flex;
+  align-items: flex-start;
+  gap: 18px;
+}
+
+.topbar__mark {
+  flex-shrink: 0;
+  width: 52px;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--indigo-deep);
+  color: #fff;
+  font-family: 'Fraunces', serif;
+  font-weight: 600;
+  font-size: 0.78rem;
+  letter-spacing: 0.02em;
+}
+
+.topbar__brand h1 {
+  font-size: clamp(1.5rem, 2.4vw, 2.1rem);
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.topbar__brand p {
+  color: var(--ink-soft);
+  font-size: 0.95rem;
+  margin: 6px 0 0;
+  max-width: 68ch;
+  line-height: 1.55;
+}
+
+/* ===== Thanh công cụ nhập thông tin bài dạy ===== */
+.toolbar {
+  background: var(--paper-panel);
+  border: 1px solid var(--rule);
+  box-shadow: var(--shadow);
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
   margin-bottom: 40px;
 }
 
-.page__eyebrow {
-  font-size: 0.85rem;
-  letter-spacing: 0.02em;
-  color: var(--amber);
-  margin: 0 0 6px;
-  font-weight: 600;
+.toolbar__row {
+  display: flex;
+  gap: 16px;
+  align-items: flex-end;
+  flex-wrap: wrap;
 }
 
-.page__header h1 {
-  font-size: clamp(1.8rem, 3vw, 2.6rem);
-  font-weight: 600;
-  line-height: 1.15;
+.field--grow-2 {
+  flex: 2 1 260px;
 }
 
-.page__subtitle {
-  max-width: 62ch;
-  color: var(--ink-soft);
-  font-size: 1.02rem;
-  line-height: 1.6;
-  margin-top: 12px;
+.toolbar .field {
+  flex: 1 1 140px;
 }
 
-.page__grid {
-  display: grid;
-  grid-template-columns: 1fr 1px 1fr;
-  gap: 40px;
+.field--narrow {
+  flex: 0 0 160px;
+  max-width: 160px;
 }
 
-.page__grid::after {
-  content: '';
-}
-
-.page__col {
-  min-width: 0;
-}
-
-.page__col:first-child {
-  border-right: 1px solid var(--rule);
-  padding-right: 40px;
+.field--tiny {
+  flex: 0 0 90px;
+  max-width: 90px;
 }
 
 .section-title {
@@ -95,9 +144,25 @@ h3 {
   margin-top: 0;
 }
 
+.page__grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 40px;
+}
+
+.page__col {
+  min-width: 0;
+}
+
+.page__col:first-child {
+  border-right: 1px solid var(--rule);
+  padding-right: 40px;
+}
+
 .card {
   background: var(--paper-panel);
   border: 1px solid var(--rule);
+  box-shadow: var(--shadow);
   padding: 20px;
   display: flex;
   flex-direction: column;
@@ -110,20 +175,10 @@ h3 {
   font-size: 1rem;
 }
 
-.grid-2 {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 16px;
-}
-
 .field {
   display: flex;
   flex-direction: column;
   gap: 6px;
-}
-
-.field--narrow {
-  max-width: 140px;
 }
 
 .field__label {
@@ -135,6 +190,7 @@ h3 {
 input[type='text'],
 input[type='number'],
 input:not([type]),
+select,
 textarea {
   border: 1px solid var(--rule);
   background: var(--paper);
@@ -144,7 +200,12 @@ textarea {
   color: var(--ink);
 }
 
+select {
+  cursor: pointer;
+}
+
 input:focus-visible,
+select:focus-visible,
 textarea:focus-visible {
   outline: 2px solid var(--indigo);
   outline-offset: 1px;
@@ -176,6 +237,7 @@ textarea:focus-visible {
   text-align: center;
   cursor: pointer;
   background: var(--paper-panel);
+  box-shadow: var(--shadow);
   transition: border-color 0.15s ease, background 0.15s ease;
 }
 
@@ -210,13 +272,21 @@ textarea:focus-visible {
 }
 
 .parse-summary {
-  font-size: 0.9rem;
+  font-size: 0.88rem;
   color: var(--ink-soft);
   margin: 10px 0 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 .parse-summary__warning {
   color: var(--danger);
+  font-weight: 500;
+}
+
+.parse-summary__ok {
+  color: var(--ok);
   font-weight: 500;
 }
 
@@ -279,6 +349,7 @@ textarea:focus-visible {
 .preview-panel {
   background: var(--paper-panel);
   border: 1px solid var(--rule);
+  box-shadow: var(--shadow);
   padding: 28px 32px;
   max-height: 70vh;
   overflow-y: auto;
@@ -356,6 +427,28 @@ textarea:focus-visible {
   font-size: 0.85em;
 }
 
+.math-preview-img {
+  max-height: 1.6em;
+  vertical-align: middle;
+  margin: 0 2px;
+}
+
+.math-preview-fallback {
+  display: inline-block;
+  color: var(--indigo);
+  background: var(--amber-soft);
+  border: 1px solid var(--amber);
+  padding: 1px 8px;
+  font-size: 0.85em;
+  text-decoration: none;
+  margin: 0 2px;
+}
+
+.math-preview-fallback:hover {
+  background: var(--amber);
+  color: #fff;
+}
+
 @media (max-width: 640px) {
   .khbd-row {
     grid-template-columns: 1fr;
@@ -367,6 +460,12 @@ textarea:focus-visible {
 }
 
 @media (max-width: 860px) {
+  .page {
+    padding: 0 20px 96px;
+  }
+  .config-banner {
+    margin: 0 -20px 0;
+  }
   .page__grid {
     grid-template-columns: 1fr;
   }
@@ -377,8 +476,15 @@ textarea:focus-visible {
     padding-bottom: 32px;
     margin-bottom: 8px;
   }
-  .grid-2,
   .checkbox-list {
     grid-template-columns: 1fr;
+  }
+  .toolbar__row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+  .field--narrow,
+  .field--tiny {
+    max-width: none;
   }
 }

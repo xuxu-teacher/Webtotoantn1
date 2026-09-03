@@ -38,9 +38,24 @@ interface WalkCtx {
   counter: { n: number };
 }
 
+const IMAGE_MIME_BY_EXT: Record<string, { mime: string; kind: 'raster' | 'vector_legacy' }> = {
+  png: { mime: 'image/png', kind: 'raster' },
+  jpg: { mime: 'image/jpeg', kind: 'raster' },
+  jpeg: { mime: 'image/jpeg', kind: 'raster' },
+  gif: { mime: 'image/gif', kind: 'raster' },
+  bmp: { mime: 'image/bmp', kind: 'raster' },
+  wmf: { mime: 'image/wmf', kind: 'vector_legacy' },
+  emf: { mime: 'image/emf', kind: 'vector_legacy' },
+};
+
 /**
  * Duyệt cây XML (preserveOrder) theo đúng thứ tự tài liệu, trả về text với
  * placeholder [[EQ:CTx]] chèn đúng vị trí công thức xuất hiện.
+ *
+ * Với công thức MathType kiểu OLE cũ (<w:object> chứa <o:OLEObject> có ProgID
+ * là "Equation..." hoặc chứa "MathType"), Word không lưu dữ liệu công thức
+ * nhưng CÓ lưu một ảnh xem trước (<v:imagedata r:id="..."/> trỏ tới file trong
+ * word/media/) — ảnh này được trích ra riêng ở bước resolveEquationImages.
  */
 function walk(node: XNode, ctx: WalkCtx): string {
   const tag = tagOf(node);
@@ -56,14 +71,28 @@ function walk(node: XNode, ctx: WalkCtx): string {
     return `[[EQ:${id}]]`;
   }
 
-  if (tag === 'o:OLEObject') {
-    const progId = attrOf(node, 'ProgID') || '';
-    if (/equation|mathtype/i.test(progId)) {
-      const id = `CT${++ctx.counter.n}`;
-      ctx.equations[id] = { id, node: null, mathml: '', convertible: false };
-      return `[[EQ:${id}]]`;
-    }
-    return '';
+  if (tag === 'w:object') {
+    const oleNodes = findDeep(node, 'o:OLEObject');
+    const isEquation = oleNodes.some((o) => /equation|mathtype/i.test(attrOf(o, 'ProgID') || ''));
+    if (!isEquation) return ''; // đối tượng nhúng khác (vd. bảng Excel) — ngoài phạm vi, bỏ qua
+
+    const shapeNode = findDeep(node, 'v:shape')[0];
+    const imageDataNode = findDeep(node, 'v:imagedata')[0];
+    const imageRelId = imageDataNode && attrOf(imageDataNode, 'r:id');
+    const style = shapeNode && attrOf(shapeNode, 'style');
+    const wMatch = style?.match(/width:([\d.]+)pt/);
+    const hMatch = style?.match(/height:([\d.]+)pt/);
+
+    const id = `CT${++ctx.counter.n}`;
+    ctx.equations[id] = {
+      id,
+      node: null,
+      mathml: '',
+      convertible: false,
+      sizePt: wMatch && hMatch ? { width: parseFloat(wMatch[1]), height: parseFloat(hMatch[1]) } : undefined,
+      __imageRelId: imageRelId,
+    };
+    return `[[EQ:${id}]]`;
   }
 
   if (tag === 'w:t') {
@@ -80,10 +109,49 @@ function walk(node: XNode, ctx: WalkCtx): string {
   return tag === 'w:p' ? `${inner}\n` : inner;
 }
 
+/** Đọc word/_rels/document.xml.rels -> map relationship Id -> đường dẫn file trong zip. */
+function parseRelationships(relsXml: string): Record<string, string> {
+  const map: Record<string, string> = {};
+  const tagRegex = /<Relationship\b[^>]*\/?>/g;
+  for (const tag of relsXml.match(tagRegex) || []) {
+    const id = tag.match(/Id="([^"]+)"/)?.[1];
+    const target = tag.match(/Target="([^"]+)"/)?.[1];
+    if (id && target) map[id] = target;
+  }
+  return map;
+}
+
+/** Trích ảnh xem trước cho các công thức OLE (dùng __imageRelId tạm gắn lúc walk). */
+async function resolveEquationImages(zip: JSZip, equations: Record<string, EquationEntry>) {
+  const relsFile = zip.file('word/_rels/document.xml.rels');
+  const relsMap = relsFile ? parseRelationships(await relsFile.async('text')) : {};
+
+  for (const eq of Object.values(equations)) {
+    const relId = eq.__imageRelId;
+    delete eq.__imageRelId;
+    if (!relId) continue;
+
+    const target = relsMap[relId];
+    if (!target) continue;
+
+    const normalized = target.replace(/^\.?\/?/, '');
+    const path = `word/${normalized}`;
+    const imgFile = zip.file(path);
+    if (!imgFile) continue;
+
+    const ext = (normalized.split('.').pop() || '').toLowerCase();
+    const info = IMAGE_MIME_BY_EXT[ext];
+    if (!info) continue;
+
+    const base64 = await imgFile.async('base64');
+    eq.previewImage = { dataUrl: `data:${info.mime};base64,${base64}`, mime: info.mime, kind: info.kind };
+  }
+}
+
 /**
  * Phân tích file .docx (giáo án gốc): trích văn bản đúng thứ tự kèm placeholder
- * công thức [[EQ:CTx]], và một sổ đăng ký công thức (MathNode + MathML) để hiển
- * thị/xuất file chính xác về sau — thay vì AI phải "đọc lại" công thức bằng LaTeX.
+ * công thức [[EQ:CTx]], một sổ đăng ký công thức (MathNode + MathML) để hiển thị/
+ * xuất file chính xác, và ảnh xem trước cho công thức MathType kiểu OLE cũ.
  */
 export async function parseDocxFile(file: File): Promise<ParsedDocument> {
   const arrayBuffer = await file.arrayBuffer();
@@ -112,6 +180,8 @@ export async function parseDocxFile(file: File): Promise<ParsedDocument> {
         .replace(/\n{3,}/g, '\n\n')
         .trim();
     }
+
+    await resolveEquationImages(zip, equations);
   }
 
   const equationCount = Object.keys(equations).length;

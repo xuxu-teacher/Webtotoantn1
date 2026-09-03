@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import FileUpload from './components/FileUpload';
 import DisabilityAccommodationForm from './components/DisabilityAccommodationForm';
 import LessonPlanForm from './components/LessonPlanForm';
@@ -19,6 +19,14 @@ export default function App() {
   const [generating, setGenerating] = useState(false);
   const [result, setResult] = useState<{ markdown: string; warnings: string[] } | null>(null);
   const [genError, setGenError] = useState<string | null>(null);
+  const [apiKeyConfigured, setApiKeyConfigured] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    fetch('/api/health')
+      .then((r) => r.json())
+      .then((d) => setApiKeyConfigured(Boolean(d.hasApiKey)))
+      .catch(() => setApiKeyConfigured(null)); // không xác định được (ví dụ đang chạy vite thuần) -> không cảnh báo
+  }, []);
 
   async function handleGenerate() {
     if (!lessonTitle.trim() || !subject.trim()) {
@@ -47,16 +55,45 @@ export default function App() {
     }
   }
 
+  const equationEntries = parsedDoc ? Object.values(parsedDoc.equations) : [];
+  const rasterPreviewCount = equationEntries.filter((e) => e.previewImage?.kind === 'raster').length;
+  const legacyImageCount = equationEntries.filter((e) => e.previewImage?.kind === 'vector_legacy').length;
+  const noPreviewCount = equationEntries.filter((e) => !e.convertible && !e.previewImage).length;
+
   return (
     <div className="page">
-      <header className="page__header">
-        <p className="page__eyebrow">Trợ lý soạn giáo án</p>
-        <h1>Kế hoạch bài dạy — Năng lực số &amp; AI</h1>
-        <p className="page__subtitle">
-          Đẩy giáo án Word gốc lên, chọn thông tin lớp học, AI sẽ soạn lại KHBD đầy đủ theo khung
-          hiện hành, có tích hợp năng lực số/AI và điều chỉnh cho học sinh khuyết tật.
-        </p>
+      {apiKeyConfigured === false && (
+        <div className="config-banner">
+          ⚠️ Server chưa cấu hình <code>ANTHROPIC_API_KEY</code> — nút "Soạn KHBD bằng AI" sẽ báo lỗi.
+          Khai báo biến này trong <strong>Vercel → Project Settings → Environment Variables</strong> rồi
+          deploy lại (xem chi tiết trong README.md).
+        </div>
+      )}
+
+      <header className="topbar">
+        <div className="topbar__brand">
+          <span className="topbar__mark">KHBD</span>
+          <div>
+            <h1>Kế hoạch bài dạy — Năng lực số &amp; AI</h1>
+            <p>Đẩy giáo án Word gốc, AI soạn lại theo khung hiện hành, có cột riêng năng lực số &amp; giáo dục hòa nhập.</p>
+          </div>
+        </div>
       </header>
+
+      <LessonPlanForm
+        subject={subject}
+        grade={grade}
+        lessonTitle={lessonTitle}
+        durationPeriods={durationPeriods}
+        extraRequirements={extraRequirements}
+        onChange={(patch) => {
+          if (patch.subject !== undefined) setSubject(patch.subject);
+          if (patch.grade !== undefined) setGrade(patch.grade);
+          if (patch.lessonTitle !== undefined) setLessonTitle(patch.lessonTitle);
+          if (patch.durationPeriods !== undefined) setDurationPeriods(patch.durationPeriods);
+          if (patch.extraRequirements !== undefined) setExtraRequirements(patch.extraRequirements);
+        }}
+      />
 
       <main className="page__grid">
         <section className="page__col">
@@ -67,33 +104,24 @@ export default function App() {
               <p>
                 Đã đọc <strong>{parsedDoc.fileName}</strong> — {parsedDoc.equationCount} công thức nhận diện được.
               </p>
-              {parsedDoc.nonConvertibleEquationCount > 0 && (
+              {rasterPreviewCount > 0 && (
+                <p className="parse-summary__ok">✓ {rasterPreviewCount} công thức MathType hiển thị được bằng ảnh xem trước.</p>
+              )}
+              {legacyImageCount > 0 && (
                 <p className="parse-summary__warning">
-                  ⚠️ Phát hiện {parsedDoc.nonConvertibleEquationCount} công thức MathType kiểu cũ (OLE) —
-                  không trích được nội dung, AI sẽ không "nhìn thấy" các công thức này. Bạn cần chèn tay
-                  lại sau khi xuất file.
+                  ⚠️ {legacyImageCount} công thức có ảnh gốc định dạng WMF/EMF — trình duyệt không hiển thị trực
+                  tiếp được (giới hạn chung của web), app cho tải ảnh gốc về ở bản xem trước.
+                </p>
+              )}
+              {noPreviewCount > 0 && (
+                <p className="parse-summary__warning">
+                  ⚠️ {noPreviewCount} công thức không tìm thấy dữ liệu lẫn ảnh xem trước trong file gốc.
                 </p>
               )}
             </div>
           )}
 
-          <h2 className="section-title">2. Thông tin bài dạy</h2>
-          <LessonPlanForm
-            subject={subject}
-            grade={grade}
-            lessonTitle={lessonTitle}
-            durationPeriods={durationPeriods}
-            extraRequirements={extraRequirements}
-            onChange={(patch) => {
-              if (patch.subject !== undefined) setSubject(patch.subject);
-              if (patch.grade !== undefined) setGrade(patch.grade);
-              if (patch.lessonTitle !== undefined) setLessonTitle(patch.lessonTitle);
-              if (patch.durationPeriods !== undefined) setDurationPeriods(patch.durationPeriods);
-              if (patch.extraRequirements !== undefined) setExtraRequirements(patch.extraRequirements);
-            }}
-          />
-
-          <h2 className="section-title">3. Học sinh khuyết tật (HSKT)</h2>
+          <h2 className="section-title">2. Học sinh khuyết tật (HSKT)</h2>
           <DisabilityAccommodationForm value={accommodation} onChange={setAccommodation} />
 
           {genError && <p className="error-banner">{genError}</p>}
@@ -103,7 +131,7 @@ export default function App() {
         </section>
 
         <section className="page__col page__col--preview">
-          <h2 className="section-title">4. Kết quả</h2>
+          <h2 className="section-title">3. Kết quả</h2>
           {!result && !generating && <p className="empty-state">Kết quả sẽ hiện ở đây sau khi soạn.</p>}
           {generating && <p className="empty-state">AI đang soạn kế hoạch bài dạy…</p>}
           {result && (

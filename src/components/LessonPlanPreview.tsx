@@ -1,3 +1,4 @@
+import EquationView from './EquationView';
 import MathRenderer from './MathRenderer';
 import { parseKhbd } from '../utils/khbdParser';
 import type { EquationEntry } from '../types';
@@ -12,15 +13,7 @@ function renderInline(text: string, key: string, equations: Record<string, Equat
   return parts.map((part, i) => {
     const eqMatch = part.match(/^\[\[EQ:([^\]]+)\]\]$/);
     if (eqMatch) {
-      const entry = equations[eqMatch[1]];
-      if (entry?.convertible && entry.mathml) {
-        return <MathRenderer key={`${key}-${i}`} mathml={entry.mathml} />;
-      }
-      return (
-        <span key={`${key}-${i}`} className="math math--missing" title="Công thức MathType cũ, không trích được — xem file gốc">
-          [công thức #{eqMatch[1]}]
-        </span>
-      );
+      return <EquationView key={`${key}-${i}`} entry={equations[eqMatch[1]]} id={eqMatch[1]} />;
     }
     if (part.startsWith('$') && part.endsWith('$')) {
       return <MathRenderer key={`${key}-${i}`} latex={part.slice(1, -1)} />;

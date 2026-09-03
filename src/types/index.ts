@@ -10,6 +10,9 @@ export const DISABILITY_LABELS: Record<DisabilityType, string> = {
   khac: 'Khuyết tật khác',
 };
 
+// ===== Khối lớp (dùng cho dropdown chọn lớp) =====
+export const GRADE_OPTIONS = ['Lớp 6', 'Lớp 7', 'Lớp 8', 'Lớp 9', 'Lớp 10', 'Lớp 11', 'Lớp 12'];
+
 // ===== Cây cú pháp công thức toán, dựng từ OMML (Word Insert Equation) =====
 export type MathNode =
   | { kind: 'text'; value: string }
@@ -26,12 +29,25 @@ export type MathNode =
   | { kind: 'acc'; base: MathNode; char: string }
   | { kind: 'matrix'; rows: MathNode[][] };
 
+/** Ảnh xem trước của công thức OLE cũ (MathType), trích từ word/media/... */
+export interface EquationPreviewImage {
+  dataUrl: string; // data:<mime>;base64,...
+  mime: string;
+  /** 'raster' = PNG/JPEG/GIF/BMP, hiển thị được thẳng bằng <img>. 'vector_legacy' = WMF/EMF, trình duyệt không render được. */
+  kind: 'raster' | 'vector_legacy';
+}
+
 /** Một công thức đã trích từ file gốc, gắn ID để chèn placeholder vào văn bản. */
 export interface EquationEntry {
   id: string; // ví dụ "CT1"
   node: MathNode | null; // null nếu không parse được cấu trúc (fallback text thô)
   mathml: string; // dùng để hiển thị bằng MathJax
   convertible: boolean; // false = công thức MathType/OLE cũ, không có dữ liệu cấu trúc
+  previewImage?: EquationPreviewImage; // ảnh xem trước, nếu trích được (chỉ áp dụng khi convertible = false)
+  /** Kích thước Word đã đặt cho ảnh xem trước (đơn vị pt), dùng để xuất lại đúng tỉ lệ. */
+  sizePt?: { width: number; height: number };
+  /** @internal chỉ dùng tạm trong lúc parse (docxParser.ts), bị xoá trước khi trả về ParsedDocument. */
+  __imageRelId?: string;
 }
 
 export interface ParsedDocument {

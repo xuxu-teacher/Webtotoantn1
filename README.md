@@ -9,18 +9,19 @@ Kế hoạch bài dạy (KHBD) đầy đủ theo khung hiện hành, có tích h
 
 ```
 src/
-  components/       Giao diện: upload, form, checkbox HSKT, preview, render công thức
+  components/       Giao diện: toolbar, upload, checkbox HSKT, preview, hiển thị công thức
   utils/
-    docxParser.ts        Đọc .docx: trích văn bản đúng thứ tự + placeholder công thức [[EQ:CTx]]
+    docxParser.ts        Đọc .docx: trích văn bản đúng thứ tự + placeholder [[EQ:CTx]] + ảnh OLE
     ommlAst.ts           Dựng cây cú pháp MathNode từ OMML (công thức Word gốc)
     mathToMathml.ts       MathNode -> MathML, để MathJax hiển thị đúng chuẩn
     mathToDocx.ts         MathNode -> object công thức thật của thư viện `docx`
     khbdParser.ts         Phân tích định dạng 2 cột <<<TRAI/PHAI>>> AI trả về
     lessonPlanTemplate.ts Khung prompt cho AI (đối chiếu logic ở api/generate.ts)
     aiClient.ts           Gọi API backend /api/generate
-    exportDocx.ts         Xuất KHBD ra .docx: bảng 2 cột thật + công thức thật
+    exportDocx.ts         Xuất KHBD ra .docx: bảng 2 cột thật + công thức/ảnh thật
   types/index.ts      Kiểu dữ liệu dùng chung
-api/generate.ts     Vercel Serverless Function — gọi Anthropic API (API key giữ ở server)
+api/generate.ts      Vercel Serverless Function — gọi Anthropic API (API key giữ ở server)
+api/health.ts        Endpoint kiểm tra server đã cấu hình ANTHROPIC_API_KEY chưa
 ```
 
 ## Chạy thử local
@@ -44,6 +45,14 @@ một backend Express tương đương và trỏ proxy trong `vite.config.ts`.
 3. Vào **Project Settings → Environment Variables**, thêm `ANTHROPIC_API_KEY`
    (lấy tại console.anthropic.com). Không đưa key này vào code phía client.
 4. Deploy. Vercel tự nhận diện `api/generate.ts` là serverless function.
+
+## Kiểm tra cấu hình API key
+
+Truy cập `/api/health` sẽ trả về `{ "hasApiKey": true|false }`. App tự gọi endpoint
+này lúc tải trang — nếu server chưa có `ANTHROPIC_API_KEY`, một banner vàng sẽ hiện
+ở đầu trang thay vì để bạn phải bấm nút rồi mới biết bị lỗi 500. Nếu chạy `vite`
+thuần (không có `/api`), banner sẽ không hiện (không xác định được, không phải là
+"đã cấu hình đúng") — đây là hành vi có chủ đích để tránh cảnh báo sai lúc dev.
 
 ## Vì sao API key nằm ở server, không gọi thẳng từ trình duyệt?
 
@@ -78,11 +87,18 @@ nguyên cấu trúc công thức gốc xuyên suốt:
 
 - **Công thức MathType kiểu OLE cũ** (chèn bằng phần mềm MathType rời hoặc Equation
   Editor 3.0 đời cũ, không phải Insert Equation của Word) không có dữ liệu cấu trúc
-  trong `document.xml` — Word chỉ lưu ảnh render sẵn. App phát hiện qua `ProgID` của
-  `o:OLEObject` (chứa "Equation"/"MathType"), vẫn chèn placeholder để AI không viết
-  đè lên vị trí đó, nhưng khi hiển thị/xuất file sẽ ghi rõ "không trích được — xem
-  file gốc". Khắc phục: mở file gốc, gõ lại công thức đó bằng Insert Equation của
-  Word trước khi đẩy lên.
+  trong `document.xml` — Word chỉ lưu ảnh xem trước. App phát hiện qua `ProgID` của
+  `o:OLEObject` (chứa "Equation"/"MathType"), rồi trích luôn ảnh xem trước đó từ
+  `word/media/` (qua bảng quan hệ `word/_rels/document.xml.rels`):
+  - Nếu ảnh là **PNG/JPEG/GIF/BMP** → hiển thị được thẳng, và được **nhúng lại thành
+    ảnh thật** trong file Word xuất ra (đúng kích thước Word đã đặt).
+  - Nếu ảnh là **WMF/EMF** (Windows Metafile — định dạng MathType hay dùng cho bản
+    xem trước) → đây là **giới hạn thật của nền tảng web**: không trình duyệt nào
+    giải mã được WMF/EMF bằng JavaScript thuần, và thư viện `docx` cũng không hỗ trợ
+    nhúng 2 định dạng này. App cho **tải ảnh gốc về** (nút 📎 trong bản xem trước) để
+    bạn tự chèn lại bằng Word, hoặc mở bằng Paint/LibreOffice để chuyển sang PNG rồi
+    dùng lại. Cách xử lý triệt để duy nhất: mở file gốc, gõ lại công thức đó bằng
+    **Insert Equation** của Word (khi đó trở thành công thức số hoá đầy đủ, sửa được).
 - **Công thức phức tạp khi xuất Word**: các cấu trúc ít gặp hơn (tổng/tích phân có
   cận, ma trận, dấu gạch ngang/mũ accent) chưa có API tương ứng ổn định trong thư
   viện `docx` nên được xuất dưới dạng văn bản công thức tuyến tính (ví dụ

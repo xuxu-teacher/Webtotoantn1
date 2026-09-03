@@ -4,6 +4,7 @@ import {
   Paragraph,
   HeadingLevel,
   TextRun,
+  ImageRun,
   Table,
   TableRow,
   TableCell,
@@ -16,9 +17,46 @@ import { parseKhbd } from './khbdParser';
 import { mathNodeToDocxComponents } from './mathToDocx';
 import type { EquationEntry } from '../types';
 
-type ParaChild = TextRun | DocxMath;
+type ParaChild = TextRun | DocxMath | ImageRun;
 
-/** Tách một dòng thành các run (text thường / công thức thật / công thức AI viết thêm bằng $...$). */
+const PT_TO_PX = 96 / 72;
+const DEFAULT_EQ_SIZE_PT = { width: 90, height: 24 };
+
+const MIME_TO_DOCX_TYPE: Record<string, 'png' | 'jpg' | 'gif' | 'bmp'> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/bmp': 'bmp',
+};
+
+function base64ToUint8Array(base64: string): Uint8Array {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+/** Trả về ImageRun cho công thức OLE có ảnh xem trước dạng raster (PNG/JPEG/GIF/BMP). */
+function equationImageRun(entry: EquationEntry): ImageRun | null {
+  const img = entry.previewImage;
+  if (!img || img.kind !== 'raster') return null;
+  const type = MIME_TO_DOCX_TYPE[img.mime];
+  if (!type) return null;
+
+  const base64 = img.dataUrl.split(',')[1] || '';
+  const size = entry.sizePt || DEFAULT_EQ_SIZE_PT;
+
+  return new ImageRun({
+    type,
+    data: base64ToUint8Array(base64),
+    transformation: {
+      width: Math.round(size.width * PT_TO_PX),
+      height: Math.round(size.height * PT_TO_PX),
+    },
+  } as any);
+}
+
+/** Tách một dòng thành các run (text thường / công thức thật / ảnh công thức OLE / $...$ AI viết thêm). */
 function inlineToRuns(line: string, equations: Record<string, EquationEntry>): ParaChild[] {
   const parts = line.split(/(\[\[EQ:[^\]]+\]\]|\$[^$]+\$)/g).filter((p) => p !== '');
   const runs: ParaChild[] = [];
@@ -29,9 +67,20 @@ function inlineToRuns(line: string, equations: Record<string, EquationEntry>): P
       const entry = equations[eqMatch[1]];
       if (entry?.convertible && entry.node) {
         runs.push(new DocxMath({ children: mathNodeToDocxComponents(entry.node) }));
-      } else {
-        runs.push(new TextRun({ text: `[công thức #${eqMatch[1]} — không trích được, xem file gốc]`, italics: true, color: 'A13D3D' }));
+        continue;
       }
+      const imgRun = entry ? equationImageRun(entry) : null;
+      if (imgRun) {
+        runs.push(imgRun);
+        continue;
+      }
+      runs.push(
+        new TextRun({
+          text: `[công thức #${eqMatch[1]} — không trích được, xem file gốc]`,
+          italics: true,
+          color: 'A13D3D',
+        })
+      );
       continue;
     }
     if (part.startsWith('$') && part.endsWith('$')) {
@@ -60,10 +109,13 @@ function textBlockToParagraphs(text: string, equations: Record<string, EquationE
 }
 
 /**
- * Xuất KHBD ra file .docx: mỗi mục là bảng 2 cột thật (không phải văn bản chen
- * dòng) — cột trái là nội dung giáo án, cột phải là năng lực số & giáo dục hòa
- * nhập, có nền màu để phân biệt rõ. Công thức toán trích được từ file gốc được
- * dựng lại thành object công thức Word thật (không phải chữ nghiêng giả lập).
+ * Xuất KHBD ra file .docx: mỗi mục là bảng 2 cột thật — cột trái là nội dung
+ * giáo án, cột phải là năng lực số & giáo dục hòa nhập, có nền màu phân biệt.
+ * Công thức Word gốc (Insert Equation) được dựng lại thành object công thức
+ * thật; công thức MathType kiểu OLE cũ có ảnh xem trước dạng PNG/JPEG được
+ * nhúng lại đúng vị trí bằng ảnh thật (không phải chữ nghiêng giả lập nữa) —
+ * chỉ khi ảnh gốc là WMF/EMF (Word không xuất PNG) mới còn ghi chú văn bản,
+ * vì thư viện docx không hỗ trợ nhúng trực tiếp 2 định dạng này.
  */
 export async function exportLessonPlanToDocx(markdown: string, equations: Record<string, EquationEntry>, fileName: string) {
   const blocks = parseKhbd(markdown);
