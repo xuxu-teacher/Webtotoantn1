@@ -30,14 +30,21 @@ function stripDollarWrap(s: string): string {
   return t;
 }
 
-async function wakeUpServer(serverUrl: string, timeoutMs = 90_000): Promise<boolean> {
+/**
+ * "Đánh thức" server: chỉ cần request có phản hồi (dù là 404/500) là coi như
+ * server đã sống dậy — không yêu cầu /health phải trả 2xx, vì có thể server
+ * thật của bạn không có route /health, hoặc trả về mã khác 200. Chỉ khi request
+ * ném lỗi mạng thật sự (server ngủ chưa kịp phản hồi, DNS sai, hoặc bị CORS
+ * chặn) mới coi là thất bại.
+ */
+async function wakeUpServer(serverUrl: string, timeoutMs = 90_000): Promise<{ ok: boolean; error?: string }> {
   try {
-    const res = await fetch(`${serverUrl}/health`, {
+    await fetch(`${serverUrl}/health`, {
       signal: (AbortSignal as any).timeout?.(timeoutMs),
     });
-    return res.ok;
-  } catch {
-    return false;
+    return { ok: true };
+  } catch (err: any) {
+    return { ok: false, error: err?.message || String(err) };
   }
 }
 
@@ -68,9 +75,16 @@ export async function convertEquationsBatch(
   }
 
   onPhase({ phase: 'waking', message: 'Đang đánh thức máy chủ MathType (có thể mất đến 60-90 giây nếu server đang ngủ đông)…' });
-  const alive = await wakeUpServer(serverUrl, 90_000);
-  if (!alive) {
-    onPhase({ phase: 'error', message: 'Không kết nối được máy chủ MathType (health check thất bại). Thử lại sau ít phút.' });
+  const wake = await wakeUpServer(serverUrl, 90_000);
+  if (!wake.ok) {
+    onPhase({
+      phase: 'error',
+      message:
+        `Không kết nối được máy chủ MathType (${wake.error || 'lỗi mạng'}). ` +
+        `Khả năng cao: (1) server đang tắt/chưa bật CORS cho phép trình duyệt gọi tới — thử mở thẳng ` +
+        `${serverUrl}/health trên một tab trình duyệt để kiểm tra server còn sống không, hoặc ` +
+        `(2) VITE_MATHTYPE_SERVER_URL chưa đúng/chưa redeploy.`,
+    });
     return { converted: 0, total: items.length };
   }
 
