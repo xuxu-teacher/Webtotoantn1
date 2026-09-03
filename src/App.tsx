@@ -3,8 +3,11 @@ import FileUpload from './components/FileUpload';
 import DisabilityAccommodationForm from './components/DisabilityAccommodationForm';
 import LessonPlanForm from './components/LessonPlanForm';
 import LessonPlanPreview from './components/LessonPlanPreview';
+import SchoolLogo from './components/SchoolLogo';
 import { generateLessonPlan } from './utils/aiClient';
 import { exportLessonPlanToDocx } from './utils/exportDocx';
+import { buildAiSourceText } from './utils/aiSourceBuilder';
+import { convertEquationsBatch } from './utils/mathTypeConverterClient';
 import type { DisabilityAccommodation, ParsedDocument } from './types';
 
 export default function App() {
@@ -12,14 +15,19 @@ export default function App() {
   const [subject, setSubject] = useState('');
   const [grade, setGrade] = useState('');
   const [lessonTitle, setLessonTitle] = useState('');
+  const [titleTouched, setTitleTouched] = useState(false); // true khi GV đã tự gõ -> không auto-fill đè lên nữa
   const [durationPeriods, setDurationPeriods] = useState(1);
   const [extraRequirements, setExtraRequirements] = useState('');
   const [accommodation, setAccommodation] = useState<DisabilityAccommodation>({ types: [], notes: '' });
+  const [headerNote, setHeaderNote] = useState('');
 
   const [generating, setGenerating] = useState(false);
   const [result, setResult] = useState<{ markdown: string; warnings: string[] } | null>(null);
   const [genError, setGenError] = useState<string | null>(null);
   const [apiKeyConfigured, setApiKeyConfigured] = useState<boolean | null>(null);
+
+  const [converting, setConverting] = useState(false);
+  const [convertStatus, setConvertStatus] = useState<string | null>(null);
 
   useEffect(() => {
     fetch('/api/health')
@@ -27,6 +35,28 @@ export default function App() {
       .then((d) => setApiKeyConfigured(Boolean(d.hasApiKey)))
       .catch(() => setApiKeyConfigured(null)); // không xác định được (ví dụ đang chạy vite thuần) -> không cảnh báo
   }, []);
+
+  function handleParsed(doc: ParsedDocument) {
+    setParsedDoc(doc);
+    if (!titleTouched && doc.suggestedTitle) {
+      setLessonTitle(doc.suggestedTitle);
+    }
+  }
+
+  async function handleConvertEquations() {
+    if (!parsedDoc) return;
+    const targets = Object.values(parsedDoc.equations).filter(
+      (e) => !e.convertible && !e.latexFromExternalConverter && e.oleObjectBase64
+    );
+    if (targets.length === 0) return;
+
+    setConverting(true);
+    await convertEquationsBatch(targets, (update) => setConvertStatus(update.message));
+    // targets là tham chiếu tới các object trong parsedDoc.equations -> đã được mutate,
+    // chỉ cần tạo bản sao mới của map để React nhận biết thay đổi và render lại.
+    setParsedDoc((prev) => (prev ? { ...prev, equations: { ...prev.equations } } : prev));
+    setConverting(false);
+  }
 
   async function handleGenerate() {
     if (!lessonTitle.trim() || !subject.trim()) {
@@ -37,7 +67,7 @@ export default function App() {
     setGenerating(true);
     setResult(null);
     try {
-      const sourceContent = parsedDoc ? parsedDoc.sourceTextWithPlaceholders : '';
+      const sourceContent = parsedDoc ? buildAiSourceText(parsedDoc) : '';
       const res = await generateLessonPlan({
         subject,
         grade,
@@ -58,13 +88,17 @@ export default function App() {
   const equationEntries = parsedDoc ? Object.values(parsedDoc.equations) : [];
   const rasterPreviewCount = equationEntries.filter((e) => e.previewImage?.kind === 'raster').length;
   const legacyImageCount = equationEntries.filter((e) => e.previewImage?.kind === 'vector_legacy').length;
-  const noPreviewCount = equationEntries.filter((e) => !e.convertible && !e.previewImage).length;
+  const noPreviewCount = equationEntries.filter((e) => !e.convertible && !e.previewImage && !e.oleObjectBase64).length;
+  const convertedCount = equationEntries.filter((e) => e.latexFromExternalConverter).length;
+  const pendingConvertCount = equationEntries.filter(
+    (e) => !e.convertible && !e.latexFromExternalConverter && e.oleObjectBase64
+  ).length;
 
   return (
     <div className="page">
       {apiKeyConfigured === false && (
         <div className="config-banner">
-          ⚠️ Server chưa cấu hình <code>ANTHROPIC_API_KEY</code> — nút "Soạn KHBD bằng AI" sẽ báo lỗi.
+          ⚠️ Server chưa cấu hình <code>ANTHROPIC_API_KEY</code> — nút "Soạn giáo án bằng AI" sẽ báo lỗi.
           Khai báo biến này trong <strong>Vercel → Project Settings → Environment Variables</strong> rồi
           deploy lại (xem chi tiết trong README.md).
         </div>
@@ -72,13 +106,25 @@ export default function App() {
 
       <header className="topbar">
         <div className="topbar__brand">
-          <span className="topbar__mark">KHBD</span>
+          <SchoolLogo />
           <div>
             <h1>Kế hoạch bài dạy — Năng lực số &amp; AI</h1>
             <p>Đẩy giáo án Word gốc, AI soạn lại theo khung hiện hành, có cột riêng năng lực số &amp; giáo dục hòa nhập.</p>
           </div>
         </div>
       </header>
+
+      <section className="card header-note-card">
+        <label className="field">
+          <span className="field__label">Header tài liệu (tự ghi — in ở đầu file Word xuất ra, ví dụ tên trường/tổ chuyên môn/GV soạn)</span>
+          <textarea
+            rows={3}
+            value={headerNote}
+            onChange={(e) => setHeaderNote(e.target.value)}
+            placeholder={'TRƯỜNG THPT SỐ 1 TƯ NGHĨA — TỔ TOÁN\nGiáo viên soạn: ...\nNăm học: ...'}
+          />
+        </label>
+      </section>
 
       <LessonPlanForm
         subject={subject}
@@ -89,7 +135,10 @@ export default function App() {
         onChange={(patch) => {
           if (patch.subject !== undefined) setSubject(patch.subject);
           if (patch.grade !== undefined) setGrade(patch.grade);
-          if (patch.lessonTitle !== undefined) setLessonTitle(patch.lessonTitle);
+          if (patch.lessonTitle !== undefined) {
+            setLessonTitle(patch.lessonTitle);
+            setTitleTouched(true);
+          }
           if (patch.durationPeriods !== undefined) setDurationPeriods(patch.durationPeriods);
           if (patch.extraRequirements !== undefined) setExtraRequirements(patch.extraRequirements);
         }}
@@ -98,19 +147,21 @@ export default function App() {
       <main className="page__grid">
         <section className="page__col">
           <h2 className="section-title">1. Giáo án gốc</h2>
-          <FileUpload onParsed={setParsedDoc} />
+          <FileUpload onParsed={handleParsed} />
           {parsedDoc && (
             <div className="parse-summary">
               <p>
                 Đã đọc <strong>{parsedDoc.fileName}</strong> — {parsedDoc.equationCount} công thức nhận diện được.
               </p>
               {rasterPreviewCount > 0 && (
-                <p className="parse-summary__ok">✓ {rasterPreviewCount} công thức MathType hiển thị được bằng ảnh xem trước.</p>
+                <p className="parse-summary__ok">✓ {rasterPreviewCount} công thức hiển thị được bằng ảnh xem trước.</p>
+              )}
+              {convertedCount > 0 && (
+                <p className="parse-summary__ok">✓ {convertedCount} công thức đã chuyển đổi sang LaTeX bằng máy chủ riêng.</p>
               )}
               {legacyImageCount > 0 && (
                 <p className="parse-summary__warning">
-                  ⚠️ {legacyImageCount} công thức có ảnh gốc định dạng WMF/EMF — trình duyệt không hiển thị trực
-                  tiếp được (giới hạn chung của web), app cho tải ảnh gốc về ở bản xem trước.
+                  ⚠️ {legacyImageCount} công thức có ảnh gốc WMF/EMF — trình duyệt không hiển thị trực tiếp được.
                 </p>
               )}
               {noPreviewCount > 0 && (
@@ -118,20 +169,32 @@ export default function App() {
                   ⚠️ {noPreviewCount} công thức không tìm thấy dữ liệu lẫn ảnh xem trước trong file gốc.
                 </p>
               )}
+              {pendingConvertCount > 0 && (
+                <div className="convert-box">
+                  <button className="btn btn--convert" onClick={handleConvertEquations} disabled={converting}>
+                    {converting ? 'Đang chuyển đổi…' : `🔄 Chuyển đổi ${pendingConvertCount} công thức bằng máy chủ MathType→LaTeX`}
+                  </button>
+                  {convertStatus && <p className="convert-box__status">{convertStatus}</p>}
+                </div>
+              )}
             </div>
           )}
 
           <h2 className="section-title">2. Học sinh khuyết tật (HSKT)</h2>
           <DisabilityAccommodationForm value={accommodation} onChange={setAccommodation} />
 
+          <h2 className="section-title">3. Soạn giáo án tích hợp năng lực số</h2>
+          <p className="step-hint">
+            AI sẽ soạn KHBD đầy đủ, có cột riêng năng lực số &amp; giáo dục hòa nhập, dựa trên thông tin và giáo án gốc ở trên.
+          </p>
           {genError && <p className="error-banner">{genError}</p>}
           <button className="btn btn--primary" onClick={handleGenerate} disabled={generating}>
-            {generating ? 'Đang soạn KHBD…' : 'Soạn KHBD bằng AI'}
+            {generating ? 'Đang soạn KHBD…' : 'Soạn giáo án bằng AI'}
           </button>
         </section>
 
         <section className="page__col page__col--preview">
-          <h2 className="section-title">3. Kết quả</h2>
+          <h2 className="section-title">4. Kết quả</h2>
           {!result && !generating && <p className="empty-state">Kết quả sẽ hiện ở đây sau khi soạn.</p>}
           {generating && <p className="empty-state">AI đang soạn kế hoạch bài dạy…</p>}
           {result && (
@@ -144,11 +207,22 @@ export default function App() {
                 </div>
               )}
               <div className="preview-panel">
+                {headerNote.trim() && (
+                  <div className="letterhead-preview">
+                    {headerNote.split('\n').filter(Boolean).map((line, i) => (
+                      <p key={i} className={i === 0 ? 'letterhead-preview__main' : ''}>
+                        {line}
+                      </p>
+                    ))}
+                  </div>
+                )}
                 <LessonPlanPreview markdown={result.markdown} equations={parsedDoc?.equations || {}} />
               </div>
               <button
                 className="btn btn--secondary"
-                onClick={() => exportLessonPlanToDocx(result.markdown, parsedDoc?.equations || {}, `KHBD_${lessonTitle || 'bai-day'}`)}
+                onClick={() =>
+                  exportLessonPlanToDocx(result.markdown, parsedDoc?.equations || {}, `KHBD_${lessonTitle || 'bai-day'}`, headerNote)
+                }
               >
                 Tải về file Word (.docx)
               </button>

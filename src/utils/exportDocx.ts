@@ -10,6 +10,7 @@ import {
   TableCell,
   WidthType,
   ShadingType,
+  AlignmentType,
   Math as DocxMath,
 } from 'docx';
 import { saveAs } from 'file-saver';
@@ -69,6 +70,10 @@ function inlineToRuns(line: string, equations: Record<string, EquationEntry>): P
         runs.push(new DocxMath({ children: mathNodeToDocxComponents(entry.node) }));
         continue;
       }
+      if (entry?.latexFromExternalConverter) {
+        runs.push(new TextRun({ text: entry.latexFromExternalConverter, italics: true, font: 'Cambria Math' }));
+        continue;
+      }
       const imgRun = entry ? equationImageRun(entry) : null;
       if (imgRun) {
         runs.push(imgRun);
@@ -112,14 +117,35 @@ function textBlockToParagraphs(text: string, equations: Record<string, EquationE
  * Xuất KHBD ra file .docx: mỗi mục là bảng 2 cột thật — cột trái là nội dung
  * giáo án, cột phải là năng lực số & giáo dục hòa nhập, có nền màu phân biệt.
  * Công thức Word gốc (Insert Equation) được dựng lại thành object công thức
- * thật; công thức MathType kiểu OLE cũ có ảnh xem trước dạng PNG/JPEG được
- * nhúng lại đúng vị trí bằng ảnh thật (không phải chữ nghiêng giả lập nữa) —
- * chỉ khi ảnh gốc là WMF/EMF (Word không xuất PNG) mới còn ghi chú văn bản,
- * vì thư viện docx không hỗ trợ nhúng trực tiếp 2 định dạng này.
+ * thật; công thức MathType đã chuyển qua máy chủ riêng hiện dạng LaTeX; công
+ * thức OLE có ảnh xem trước PNG/JPEG được nhúng lại bằng ảnh thật — chỉ khi
+ * hoàn toàn không có gì mới còn ghi chú văn bản.
+ *
+ * headerNote (tự ghi, ví dụ tên trường/tổ chuyên môn) được in thành các dòng
+ * căn giữa ở đầu văn bản, trước toàn bộ nội dung KHBD.
  */
-export async function exportLessonPlanToDocx(markdown: string, equations: Record<string, EquationEntry>, fileName: string) {
+export async function exportLessonPlanToDocx(
+  markdown: string,
+  equations: Record<string, EquationEntry>,
+  fileName: string,
+  headerNote?: string
+) {
   const blocks = parseKhbd(markdown);
   const children: (Paragraph | Table)[] = [];
+
+  if (headerNote?.trim()) {
+    const headerLines = headerNote.split('\n').filter((l) => l.trim());
+    headerLines.forEach((line, idx) => {
+      children.push(
+        new Paragraph({
+          alignment: AlignmentType.CENTER,
+          children: [new TextRun({ text: line.trim(), bold: idx === 0, size: idx === 0 ? 24 : 20 })],
+          spacing: { after: idx === headerLines.length - 1 ? 240 : 40 },
+        })
+      );
+    });
+  }
+
 
   for (const block of blocks) {
     if (block.type === 'heading') {

@@ -11,7 +11,7 @@ export const DISABILITY_LABELS: Record<DisabilityType, string> = {
 };
 
 // ===== Khối lớp (dùng cho dropdown chọn lớp) =====
-export const GRADE_OPTIONS = ['Lớp 6', 'Lớp 7', 'Lớp 8', 'Lớp 9', 'Lớp 10', 'Lớp 11', 'Lớp 12'];
+export const GRADE_OPTIONS = ['Lớp 10', 'Lớp 11', 'Lớp 12'];
 
 // ===== Cây cú pháp công thức toán, dựng từ OMML (Word Insert Equation) =====
 export type MathNode =
@@ -44,10 +44,16 @@ export interface EquationEntry {
   mathml: string; // dùng để hiển thị bằng MathJax
   convertible: boolean; // false = công thức MathType/OLE cũ, không có dữ liệu cấu trúc
   previewImage?: EquationPreviewImage; // ảnh xem trước, nếu trích được (chỉ áp dụng khi convertible = false)
+  /** Dữ liệu OLE gốc (.bin, chứa MTEF nhị phân) — dữ liệu ĐÚNG cần gửi cho máy chủ MathType→LaTeX. Base64, không có prefix data:. */
+  oleObjectBase64?: string;
+  /** Kết quả LaTeX trả về từ máy chủ chuyển đổi riêng của bạn (nếu đã chạy bước "Chuyển đổi bằng máy chủ MathType"). */
+  latexFromExternalConverter?: string;
   /** Kích thước Word đã đặt cho ảnh xem trước (đơn vị pt), dùng để xuất lại đúng tỉ lệ. */
   sizePt?: { width: number; height: number };
   /** @internal chỉ dùng tạm trong lúc parse (docxParser.ts), bị xoá trước khi trả về ParsedDocument. */
   __imageRelId?: string;
+  /** @internal chỉ dùng tạm trong lúc parse (docxParser.ts), bị xoá trước khi trả về ParsedDocument. */
+  __oleRelId?: string;
 }
 
 export interface ParsedDocument {
@@ -57,6 +63,8 @@ export interface ParsedDocument {
   equations: Record<string, EquationEntry>;
   equationCount: number;
   nonConvertibleEquationCount: number;
+  /** Tên bài học gợi ý (tự nhận diện từ heading trong file hoặc từ tên file) — chỉ là gợi ý, GV có thể sửa. */
+  suggestedTitle?: string;
 }
 
 // ===== Thông tin đầu vào cho AI =====
@@ -70,7 +78,7 @@ export interface LessonPlanRequest {
   grade: string;
   lessonTitle: string;
   durationPeriods: number;
-  sourceContent: string; // = sourceTextWithPlaceholders, gửi cho AI
+  sourceContent: string; // ngữ liệu gửi AI (placeholder [[EQ:CTx]] kèm gợi ý nội dung công thức)
   accommodation: DisabilityAccommodation;
   extraRequirements?: string;
 }

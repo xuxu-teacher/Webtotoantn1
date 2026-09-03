@@ -42,9 +42,12 @@ TRAI>>>
 (năng lực số & giáo dục hòa nhập tương ứng CHỈ với mục này)
 PHAI>>>
 
-3. Placeholder dạng [[EQ:CT1]], [[EQ:CT2]]... trong ngữ liệu gốc LÀ CÔNG THỨC TOÁN —
-   giữ nguyên y hệt, đúng vị trí xuất hiện trong câu. Không được viết lại bằng lời,
-   không đổi sang LaTeX/ $...$, không xoá.
+3. Placeholder dạng [[EQ:CT1]], [[EQ:CT2]]... trong ngữ liệu gốc LÀ CÔNG THỨC TOÁN.
+   Có thể có chú thích ngay sau, dạng [[EQ:CT1]](ct: x^2+3x-4) — phần (ct: ...) CHỈ
+   để bạn hiểu nội dung công thức mà viết văn cảnh phù hợp, TUYỆT ĐỐI KHÔNG chép lại
+   phần (ct: ...) vào bài. Khi viết KHBD, chỉ xuất lại placeholder trần [[EQ:CT1]],
+   bỏ hẳn phần (ct: ...) phía sau — giữ nguyên y hệt, đúng vị trí xuất hiện trong câu,
+   không viết lại bằng lời, không đổi sang LaTeX/ $...$, không xoá.
 
 CẤU TRÚC NỘI DUNG:
 

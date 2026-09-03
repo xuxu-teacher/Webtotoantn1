@@ -21,6 +21,10 @@ export default function EquationView({ entry, id }: Props) {
     return <MathRenderer mathml={entry.mathml} />;
   }
 
+  if (entry.latexFromExternalConverter) {
+    return <MathRenderer latex={entry.latexFromExternalConverter} />;
+  }
+
   if (entry.previewImage?.kind === 'raster') {
     return (
       <img

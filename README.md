@@ -19,6 +19,9 @@ src/
     lessonPlanTemplate.ts Khung prompt cho AI (đối chiếu logic ở api/generate.ts)
     aiClient.ts           Gọi API backend /api/generate
     exportDocx.ts         Xuất KHBD ra .docx: bảng 2 cột thật + công thức/ảnh thật
+    mathToLinearText.ts   MathNode -> text tuyến tính (fallback xuất Word + gợi ý cho AI)
+    aiSourceBuilder.ts     Dựng ngữ liệu gửi AI (placeholder + gợi ý nội dung công thức)
+    mathTypeConverterClient.ts  Gọi thẳng máy chủ MathType->LaTeX riêng của bạn từ trình duyệt
   types/index.ts      Kiểu dữ liệu dùng chung
 api/generate.ts      Vercel Serverless Function — gọi Anthropic API (API key giữ ở server)
 api/health.ts        Endpoint kiểm tra server đã cấu hình ANTHROPIC_API_KEY chưa
@@ -130,11 +133,68 @@ bao giờ bị AI chèn lẫn vào cột trái.
 - Trước khi ban hành chính thức, đối chiếu KHBD do AI soạn với văn bản mới nhất của
   Sở/Phòng GD&ĐT nơi bạn công tác.
 
-### Chất lượng nội dung do AI sinh ra
+### Các phần khác đã cập nhật
+
+- **Logo**: `src/components/SchoolLogo.tsx` là huy hiệu SVG tự thiết kế (không sao
+  chép logo chính thức nào — mình không có file thật của trường). Nếu bạn có file
+  logo chính thức, thay nội dung component này bằng `<img src="/logo-truong.png" />`
+  — sửa đúng 1 file, mọi chỗ dùng `<SchoolLogo />` tự cập nhật.
+- **Header tài liệu (tự ghi)**: ô nhập ngay dưới tiêu đề trang — nội dung gõ vào (ví
+  dụ tên trường/tổ chuyên môn/GV soạn) được in căn giữa ở đầu file Word xuất ra, và
+  hiện trước bản xem trước KHBD.
+- **Tự động điền tên bài** khi upload: `docxParser.ts` thử tìm theo thứ tự — (1)
+  đoạn có style Heading/Title trong file Word, (2) dòng bắt đầu bằng "BÀI"/"CHỦ
+  ĐỀ"/"CHUYÊN ĐỀ" trong 25 dòng đầu, (3) suy từ tên file (bỏ mã số/hậu tố viết tắt
+  đầu-cuối). Đây chỉ là **gợi ý** — nếu bạn tự gõ vào ô Tên bài học, gợi ý sẽ không
+  ghi đè lên nữa (kể cả khi upload file khác sau đó).
+- **Khối lớp**: dropdown chỉ còn Lớp 10, 11, 12 (`GRADE_OPTIONS` trong
+  `src/types/index.ts` — muốn đổi lại thì sửa mảng này).
+
+## Chất lượng nội dung do AI sinh ra
 - AI có thể diễn đạt sai lệch nội dung chuyên môn nếu văn bản gốc trích xuất bị thiếu
   ngữ cảnh (đặc biệt với công thức OLE không trích được). Luôn đọc lại và chỉnh sửa
   trước khi sử dụng chính thức — công cụ này hỗ trợ soạn thảo, không thay thế việc
   giáo viên kiểm duyệt nội dung.
+
+## Tích hợp máy chủ MathType→LaTeX riêng của bạn
+
+Đã nối theo đúng API thật lấy từ code project cũ của bạn
+(`services/mathWordParserService.ts`), không còn là giả định nữa:
+
+```
+GET  {VITE_MATHTYPE_SERVER_URL}/health          -> đánh thức server (Render free tier ngủ đông)
+POST {VITE_MATHTYPE_SERVER_URL}/v1/convert
+     body:     { items: [{ id, ole_b64 }], wrap: true }
+     response: { results: [{ id, latex, error? }] }
+```
+
+Luồng hoạt động:
+
+1. Với mỗi công thức OLE, app đã trích sẵn dữ liệu **OLE gốc** (`.bin` chứa MTEF
+   nhị phân) lúc đọc file — xem `docxParser.ts`.
+2. Bấm nút "🔄 Chuyển đổi N công thức bằng máy chủ MathType→LaTeX" (hiện dưới
+   phần tóm tắt sau khi upload) → `mathTypeConverterClient.ts` gọi **thẳng từ
+   trình duyệt** tới server của bạn — TOÀN BỘ công thức trong **một request duy
+   nhất** (đúng như server được thiết kế để nhận, không gọi từng cái một).
+3. LaTeX trả về được hiển thị bằng MathJax, và dùng làm gợi ý nội dung công thức
+   gửi cho AI (xem `aiSourceBuilder.ts`).
+
+**Vì sao gọi thẳng từ trình duyệt, không qua serverless function của app** (khác
+với cách giấu `ANTHROPIC_API_KEY`): server MathType chạy trên Render free tier
+sẽ ngủ đông khi không có traffic, cold-start có thể mất 60-90 giây để đánh thức.
+Một hàm serverless của Vercel có giới hạn thời gian chạy (Hobby: 10 giây) sẽ bị
+timeout trước khi server kịp thức dậy. Gọi thẳng từ trình duyệt (giống hệt cách
+project cũ của bạn đã làm, qua biến `VITE_MATHTYPE_SERVER_URL`) không bị giới
+hạn này. Biến này là build-time và sẽ lộ trong bundle client — an toàn vì chỉ là
+một URL công khai, server không yêu cầu API key.
+
+Khai báo `VITE_MATHTYPE_SERVER_URL` trong Vercel Environment Variables (áp dụng
+cho môi trường Production/Preview, và nhớ **Redeploy** sau khi thêm — biến
+`VITE_` chỉ được đọc lúc build, thêm biến xong mà không deploy lại thì bundle cũ
+vẫn không có giá trị này, đúng như tình huống bạn từng gặp ở project cũ).
+
+Nếu server của bạn có domain khác hoặc cần thêm xác thực, sửa
+`src/utils/mathTypeConverterClient.ts` — mọi thứ nằm gọn trong 1 file.
 
 ## Có thể mở rộng thêm
 
