@@ -56,13 +56,28 @@ export interface EquationEntry {
   __oleRelId?: string;
 }
 
+/** Một hình vẽ/ảnh minh hoạ (không phải công thức) trích từ file gốc, ví dụ hình vẽ hình học,
+ * biểu đồ chèn bằng "Insert > Pictures", ảnh chụp màn hình GeoGebra dán vào giáo án... */
+export interface ImageEntry {
+  id: string; // ví dụ "IMG1"
+  dataUrl: string; // data:<mime>;base64,...
+  mime: string;
+  /** 'raster' = PNG/JPEG/GIF/BMP, hiển thị và xuất Word được thẳng. 'vector_legacy' = WMF/EMF, không nhúng lại được. */
+  kind: 'raster' | 'vector_legacy';
+  /** Kích thước Word đã đặt cho ảnh (đơn vị pt), dùng để xuất lại đúng tỉ lệ. */
+  sizePt?: { width: number; height: number };
+  /** @internal chỉ dùng tạm trong lúc parse (docxParser.ts), bị xoá trước khi trả về ParsedDocument. */
+  __relId?: string;
+}
+
 export interface ParsedDocument {
   fileName: string;
-  sourceTextWithPlaceholders: string; // văn bản gốc, công thức thay bằng [[EQ:CT1]]...
+  sourceTextWithPlaceholders: string; // văn bản gốc, công thức thay bằng [[EQ:CT1]]..., hình vẽ thay bằng [[IMG:IMG1]]...
   rawHtml: string; // bản render mammoth, để đối chiếu trực quan
   equations: Record<string, EquationEntry>;
   equationCount: number;
   nonConvertibleEquationCount: number;
+  images: Record<string, ImageEntry>;
   /** Tên bài học gợi ý (tự nhận diện từ heading trong file hoặc từ tên file) — chỉ là gợi ý, GV có thể sửa. */
   suggestedTitle?: string;
 }

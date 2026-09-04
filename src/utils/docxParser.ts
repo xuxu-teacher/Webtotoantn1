@@ -3,7 +3,7 @@ import JSZip from 'jszip';
 import { XMLParser } from 'fast-xml-parser';
 import { parseOMathToNode } from './ommlAst';
 import { mathNodeToMathml } from './mathToMathml';
-import type { EquationEntry, ParsedDocument } from '../types';
+import type { EquationEntry, ImageEntry, ParsedDocument } from '../types';
 
 type XNode = Record<string, any>;
 
@@ -35,10 +35,15 @@ function findDeep(node: XNode, tag: string, results: XNode[] = []): XNode[] {
 
 interface WalkCtx {
   equations: Record<string, EquationEntry>;
+  images: Record<string, ImageEntry>;
   counter: { n: number };
+  imgCounter: { n: number };
   /** Tiêu đề gợi ý, lấy từ đoạn văn đầu tiên có style Title/Heading (nếu có). */
   headingTitle?: string;
 }
+
+/** 1pt = 12700 EMU (đơn vị mà <wp:extent cx="..." cy="..."/> dùng). */
+const EMU_PER_PT = 12700;
 
 const IMAGE_MIME_BY_EXT: Record<string, { mime: string; kind: 'raster' | 'vector_legacy' }> = {
   png: { mime: 'image/png', kind: 'raster' },
@@ -100,6 +105,31 @@ function walk(node: XNode, ctx: WalkCtx): string {
       __oleRelId: oleRelId,
     };
     return `[[EQ:${id}]]`;
+  }
+
+  if (tag === 'w:drawing') {
+    // Hình vẽ/ảnh chèn bằng "Insert > Pictures" (không phải công thức) — cấu trúc
+    // DrawingML chuẩn: w:drawing > wp:inline|wp:anchor > a:graphic > a:graphicData
+    // > pic:pic > pic:blipFill > a:blip (r:embed = id ảnh trong word/media/...),
+    // kèm wp:extent (cx/cy đơn vị EMU) cho kích thước hiển thị trong Word.
+    const blipNode = findDeep(node, 'a:blip')[0];
+    const relId = blipNode && attrOf(blipNode, 'r:embed');
+    if (!relId) return ''; // không tìm được ảnh nhúng (vd. hình vẽ SmartArt/shape thuần) — ngoài phạm vi, bỏ qua
+
+    const extentNode = findDeep(node, 'wp:extent')[0];
+    const cx = extentNode && Number(attrOf(extentNode, 'cx'));
+    const cy = extentNode && Number(attrOf(extentNode, 'cy'));
+
+    const id = `IMG${++ctx.imgCounter.n}`;
+    ctx.images[id] = {
+      id,
+      dataUrl: '',
+      mime: '',
+      kind: 'raster',
+      sizePt: cx && cy ? { width: cx / EMU_PER_PT, height: cy / EMU_PER_PT } : undefined,
+      __relId: relId,
+    };
+    return `[[IMG:${id}]]`;
   }
 
   if (tag === 'w:t') {
@@ -227,6 +257,39 @@ async function resolveEquationAssets(zip: JSZip, equations: Record<string, Equat
   }
 }
 
+/** Trích dữ liệu ảnh thật (base64) cho các hình vẽ/ảnh minh hoạ, dùng __relId tạm gắn lúc walk(). */
+async function resolveImageAssets(zip: JSZip, images: Record<string, ImageEntry>) {
+  const relsFile = zip.file('word/_rels/document.xml.rels');
+  const relsMap = relsFile ? parseRelationships(await relsFile.async('text')) : {};
+
+  for (const img of Object.values(images)) {
+    const relId = img.__relId;
+    delete img.__relId;
+    if (!relId) continue;
+
+    const target = relsMap[relId];
+    if (!target) continue;
+
+    const path = `word/${target.replace(/^\.?\/?/, '')}`;
+    const imgFile = zip.file(path);
+    const ext = (target.split('.').pop() || '').toLowerCase();
+    const info = IMAGE_MIME_BY_EXT[ext];
+    if (imgFile && info) {
+      const base64 = await imgFile.async('base64');
+      img.dataUrl = `data:${info.mime};base64,${base64}`;
+      img.mime = info.mime;
+      img.kind = info.kind;
+    }
+  }
+
+  // Ảnh không trích được dữ liệu (định dạng lạ/không tìm thấy file) -> loại khỏi
+  // sổ đăng ký, để lúc hiển thị/xuất Word hiện đúng "không trích được" thay vì
+  // một ảnh rỗng.
+  for (const [id, img] of Object.entries(images)) {
+    if (!img.dataUrl) delete images[id];
+  }
+}
+
 /** Dò tên bài từ vài dòng đầu (mẫu "BÀI ...", "CHỦ ĐỀ ...", "CHUYÊN ĐỀ ..."). */
 function findTitleLineInText(text: string): string | undefined {
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean).slice(0, 25);
@@ -262,6 +325,7 @@ export async function parseDocxFile(file: File): Promise<ParsedDocument> {
   const htmlResult = await mammoth.convertToHtml({ arrayBuffer });
 
   const equations: Record<string, EquationEntry> = {};
+  const images: Record<string, ImageEntry> = {};
   let sourceTextWithPlaceholders = '';
   let headingTitle: string | undefined;
 
@@ -274,7 +338,7 @@ export async function parseDocxFile(file: File): Promise<ParsedDocument> {
 
     const documentNode = findDeep({ root: parsed } as any, 'w:document')[0];
     const bodyNode = documentNode && findDeep(documentNode, 'w:body')[0];
-    const ctx: WalkCtx = { equations, counter: { n: 0 } };
+    const ctx: WalkCtx = { equations, images, counter: { n: 0 }, imgCounter: { n: 0 } };
 
     if (bodyNode) {
       sourceTextWithPlaceholders = childrenOf(bodyNode)
@@ -286,6 +350,7 @@ export async function parseDocxFile(file: File): Promise<ParsedDocument> {
 
     headingTitle = ctx.headingTitle;
     await resolveEquationAssets(zip, equations);
+    await resolveImageAssets(zip, images);
   }
 
   const equationCount = Object.keys(equations).length;
@@ -301,6 +366,7 @@ export async function parseDocxFile(file: File): Promise<ParsedDocument> {
     equations,
     equationCount,
     nonConvertibleEquationCount,
+    images,
     suggestedTitle,
   };
 }

@@ -84,6 +84,11 @@ KT>>>
    CHỈ được xuất lại ĐÚNG NGUYÊN VĂN placeholder trần đó (ví dụ [[EQ:CT1]]) tại đúng vị trí
    xuất hiện trong câu — TUYỆT ĐỐI KHÔNG viết công thức ra bằng lời, không đổi sang LaTeX,
    không chép nội dung từ mục chú thích vào thay cho placeholder, không xoá placeholder.
+6b. Placeholder dạng [[IMG:IMG1]], [[IMG:IMG2]]... trong ngữ liệu gốc LÀ HÌNH VẼ/ẢNH MINH HOẠ
+   (ví dụ hình hình học, đồ thị, ảnh chụp màn hình) — không phải công thức và không có văn
+   bản thay thế. Khi gặp placeholder này trong khối GOC, CHỈ được xuất lại ĐÚNG NGUYÊN VĂN
+   placeholder trần đó (ví dụ [[IMG:IMG1]]) tại đúng vị trí xuất hiện — TUYỆT ĐỐI KHÔNG mô
+   tả hình bằng lời, không đoán nội dung hình để viết thay, không xoá placeholder.
 7. Nếu trong khối SO hoặc KT bạn cần viết MỘT công thức toán MỚI (không có trong ngữ liệu
    gốc, ví dụ ví dụ minh hoạ trong một prompt gợi ý AI), được phép dùng LaTeX bọc trong
    $...$, nhưng CHỈ dùng cú pháp đơn giản: chữ/số, ^{...} (số mũ), _{...} (chỉ số dưới),
@@ -123,8 +128,9 @@ YÊU CẦU THÊM CỦA GIÁO VIÊN:
 ${req.extraRequirements || '(không có)'}
 
 NGỮ LIỆU TRÍCH TỪ GIÁO ÁN GỐC (đây là phần khối GOC phải chép LẠI NGUYÊN VĂN -- công thức
-toán đã thay bằng placeholder trần [[EQ:CTx]], PHẢI giữ nguyên các placeholder này đúng vị
-trí, không viết lại; nếu có bảng dạng Markdown thì phải tái tạo lại đúng bảng đó):
+toán đã thay bằng placeholder trần [[EQ:CTx]], hình vẽ/ảnh minh hoạ đã thay bằng placeholder
+trần [[IMG:IMGx]], PHẢI giữ nguyên các placeholder này đúng vị trí, không viết lại; nếu có
+bảng dạng Markdown thì phải tái tạo lại đúng bảng đó):
 ---
 ${req.sourceContent || '(không trích được nội dung -- hãy soạn KHBD dựa trên tên bài và môn học ở trên)'}
 ---

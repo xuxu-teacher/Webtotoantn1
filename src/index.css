@@ -745,6 +745,16 @@ mjx-container[display='true'] {
   margin: 0 2px;
 }
 
+/* Hình vẽ/ảnh minh hoạ thường (khác công thức) — hiện thành khối riêng, không
+   ép vừa dòng chữ như ảnh xem trước công thức ở trên. */
+.lesson-preview__image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 8px 0;
+  border-radius: 4px;
+}
+
 .math-preview-fallback {
   display: inline-block;
   color: var(--indigo);

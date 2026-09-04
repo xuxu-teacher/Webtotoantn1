@@ -18,12 +18,30 @@ import { parseKhbd } from './khbdParser';
 import { parseContentLines, trySectionMerge } from './markdownTable';
 import { mathNodeToDocxComponents } from './mathToDocx';
 import { parseLatexSafe } from './latexToMathNode';
-import type { EquationEntry } from '../types';
+import type { EquationEntry, ImageEntry } from '../types';
 
 type ParaChild = TextRun | DocxMath | ImageRun;
 
 const PT_TO_PX = 96 / 72;
 const DEFAULT_EQ_SIZE_PT = { width: 90, height: 24 };
+
+// Font/định dạng chuẩn cho toàn bộ văn bản xuất ra — Times New Roman 12 (size
+// tính bằng half-point, nên 12pt = 24), lề gọn theo chuẩn văn bản hành chính VN
+// (trên 2cm, dưới 2cm, phải 2cm, trái 3cm để chừa chỗ đóng tập/bấm ghim).
+const BODY_FONT = 'Times New Roman';
+const BODY_SIZE_HALF_PT = 24; // 12pt
+const CM_TO_TWIP = 566.929;
+const PAGE_MARGIN = {
+  top: Math.round(2 * CM_TO_TWIP),
+  bottom: Math.round(2 * CM_TO_TWIP),
+  right: Math.round(2 * CM_TO_TWIP),
+  left: Math.round(3 * CM_TO_TWIP),
+};
+// Chiều rộng khả dụng của trang (A4 21cm - lề trái 3cm - lề phải 2cm = 16cm) —
+// dùng để giới hạn ảnh chèn từ file gốc không bị tràn lề khi Word đặt kích
+// thước gốc quá khổ (ví dụ ảnh chụp màn hình full HD dán thẳng vào giáo án).
+const MAX_IMAGE_WIDTH_PT = (21 - 3 - 2) * (72 / 2.54);
+const DEFAULT_IMG_SIZE_PT = { width: 300, height: 200 };
 
 const MIME_TO_DOCX_TYPE: Record<string, 'png' | 'jpg' | 'gif' | 'bmp'> = {
   'image/png': 'png',
@@ -59,12 +77,59 @@ function equationImageRun(entry: EquationEntry): ImageRun | null {
   } as any);
 }
 
-/** Tách một dòng thành các run (text thường / công thức thật / ảnh công thức OLE / $...$ AI viết thêm). */
-function inlineToRuns(line: string, equations: Record<string, EquationEntry>): ParaChild[] {
-  const parts = line.split(/(\[\[EQ:[^\]]+\]\]|\$[^$]+\$)/g).filter((p) => p !== '');
+/** Trả về ImageRun cho một hình vẽ/ảnh minh hoạ thường (không phải công thức), có giới hạn
+ * chiều rộng tối đa để không tràn lề trang khi ảnh gốc quá khổ. */
+function plainImageRun(entry: ImageEntry): ImageRun | null {
+  if (entry.kind !== 'raster') return null;
+  const type = MIME_TO_DOCX_TYPE[entry.mime];
+  if (!type) return null;
+
+  const base64 = entry.dataUrl.split(',')[1] || '';
+  const size = entry.sizePt || DEFAULT_IMG_SIZE_PT;
+  let widthPt = size.width;
+  let heightPt = size.height;
+  if (widthPt > MAX_IMAGE_WIDTH_PT) {
+    heightPt = (heightPt * MAX_IMAGE_WIDTH_PT) / widthPt;
+    widthPt = MAX_IMAGE_WIDTH_PT;
+  }
+
+  return new ImageRun({
+    type,
+    data: base64ToUint8Array(base64),
+    transformation: {
+      width: Math.round(widthPt * PT_TO_PX),
+      height: Math.round(heightPt * PT_TO_PX),
+    },
+  } as any);
+}
+
+/** Tách một dòng thành các run (text thường / công thức thật / ảnh công thức OLE / hình vẽ thường / $...$ AI viết thêm). */
+function inlineToRuns(
+  line: string,
+  equations: Record<string, EquationEntry>,
+  images: Record<string, ImageEntry>
+): ParaChild[] {
+  const parts = line.split(/(\[\[EQ:[^\]]+\]\]|\[\[IMG:[^\]]+\]\]|\$[^$]+\$)/g).filter((p) => p !== '');
   const runs: ParaChild[] = [];
 
   for (const part of parts) {
+    const imgMatch = part.match(/^\[\[IMG:([^\]]+)\]\]$/);
+    if (imgMatch) {
+      const entry = images[imgMatch[1]];
+      const imgRun = entry ? plainImageRun(entry) : null;
+      if (imgRun) {
+        runs.push(imgRun);
+        continue;
+      }
+      runs.push(
+        new TextRun({
+          text: `[hình vẽ #${imgMatch[1]} — không trích được, xem file gốc]`,
+          italics: true,
+          color: 'A13D3D',
+        })
+      );
+      continue;
+    }
     const eqMatch = part.match(/^\[\[EQ:([^\]]+)\]\]$/);
     if (eqMatch) {
       const entry = equations[eqMatch[1]];
@@ -109,7 +174,8 @@ function inlineToRuns(line: string, equations: Record<string, EquationEntry>): P
 
 function contentLinesToParagraphs(
   items: ReturnType<typeof parseContentLines>,
-  equations: Record<string, EquationEntry>
+  equations: Record<string, EquationEntry>,
+  images: Record<string, ImageEntry>
 ): (Paragraph | Table)[] {
   if (items.length === 0) return [new Paragraph({})];
 
@@ -126,7 +192,7 @@ function contentLinesToParagraphs(
               new TableCell({
                 width: { size: colWidth, type: WidthType.PERCENTAGE },
                 shading: isHeader ? { type: ShadingType.CLEAR, fill: 'E9ECF7' } : undefined,
-                children: [new Paragraph({ children: inlineToRuns(cell, equations) })],
+                children: [new Paragraph({ children: inlineToRuns(cell, equations, images) })],
                 margins: { top: 80, bottom: 80, left: 100, right: 100 },
               })
           ),
@@ -141,16 +207,20 @@ function contentLinesToParagraphs(
       continue;
     }
     if (item.type === 'bullet') {
-      out.push(new Paragraph({ bullet: { level: 0 }, children: inlineToRuns(item.text, equations) }));
+      out.push(new Paragraph({ bullet: { level: 0 }, children: inlineToRuns(item.text, equations, images) }));
       continue;
     }
-    out.push(new Paragraph({ children: inlineToRuns(item.text, equations) }));
+    out.push(new Paragraph({ children: inlineToRuns(item.text, equations, images) }));
   }
   return out;
 }
 
-function textBlockToParagraphs(text: string, equations: Record<string, EquationEntry>): (Paragraph | Table)[] {
-  return contentLinesToParagraphs(parseContentLines(text), equations);
+function textBlockToParagraphs(
+  text: string,
+  equations: Record<string, EquationEntry>,
+  images: Record<string, ImageEntry>
+): (Paragraph | Table)[] {
+  return contentLinesToParagraphs(parseContentLines(text), equations, images);
 }
 
 /**
@@ -162,7 +232,8 @@ function textBlockToParagraphs(text: string, equations: Record<string, EquationE
  */
 function buildMergedTable(
   merged: NonNullable<ReturnType<typeof trySectionMerge>>,
-  equations: Record<string, EquationEntry>
+  equations: Record<string, EquationEntry>,
+  images: Record<string, ImageEntry>
 ): Table {
   const { headers, rows, soText, ktText } = merged;
   const extraCols = (soText !== null ? 1 : 0) + (ktText !== null ? 1 : 0);
@@ -176,7 +247,7 @@ function buildMergedTable(
           new TableCell({
             width: { size: colWidth, type: WidthType.PERCENTAGE },
             shading: { type: ShadingType.CLEAR, fill: 'E9ECF7' },
-            children: [new Paragraph({ children: inlineToRuns(h, equations) })],
+            children: [new Paragraph({ children: inlineToRuns(h, equations, images) })],
             margins: { top: 80, bottom: 80, left: 100, right: 100 },
           })
       ),
@@ -211,7 +282,7 @@ function buildMergedTable(
             (cell) =>
               new TableCell({
                 width: { size: colWidth, type: WidthType.PERCENTAGE },
-                children: [new Paragraph({ children: inlineToRuns(cell, equations) })],
+                children: [new Paragraph({ children: inlineToRuns(cell, equations, images) })],
                 margins: { top: 80, bottom: 80, left: 100, right: 100 },
               })
           ),
@@ -224,7 +295,7 @@ function buildMergedTable(
                   width: { size: colWidth, type: WidthType.PERCENTAGE },
                   shading: { type: ShadingType.CLEAR, fill: 'DCE6F7' },
                   rowSpan: rows.length,
-                  children: contentLinesToParagraphs(parseContentLines(soText), equations),
+                  children: contentLinesToParagraphs(parseContentLines(soText), equations, images),
                   margins: { top: 80, bottom: 80, left: 100, right: 100 },
                 }),
               ]
@@ -235,7 +306,7 @@ function buildMergedTable(
                   width: { size: colWidth, type: WidthType.PERCENTAGE },
                   shading: { type: ShadingType.CLEAR, fill: 'F2E2C8' },
                   rowSpan: rows.length,
-                  children: contentLinesToParagraphs(parseContentLines(ktText), equations),
+                  children: contentLinesToParagraphs(parseContentLines(ktText), equations, images),
                   margins: { top: 80, bottom: 80, left: 100, right: 100 },
                 }),
               ]
@@ -263,6 +334,7 @@ function buildMergedTable(
 export async function exportLessonPlanToDocx(
   markdown: string,
   equations: Record<string, EquationEntry>,
+  images: Record<string, ImageEntry>,
   fileName: string,
   headerNote?: string,
   weekNumber?: string,
@@ -296,7 +368,7 @@ export async function exportLessonPlanToDocx(
   for (const block of blocks) {
     if (block.type === 'heading') {
       const headingLevel = block.level === 1 ? HeadingLevel.HEADING_1 : block.level === 2 ? HeadingLevel.HEADING_2 : HeadingLevel.HEADING_3;
-      children.push(new Paragraph({ heading: headingLevel, children: inlineToRuns(block.text, equations), spacing: { before: 240, after: 120 } }));
+      children.push(new Paragraph({ heading: headingLevel, children: inlineToRuns(block.text, equations, images), spacing: { before: 240, after: 120 } }));
       if (!subtitleInserted) {
         children.push(
           new Paragraph({
@@ -310,7 +382,7 @@ export async function exportLessonPlanToDocx(
     }
 
     if (block.type === 'text') {
-      children.push(new Paragraph({ children: inlineToRuns(block.text, equations) }));
+      children.push(new Paragraph({ children: inlineToRuns(block.text, equations, images) }));
       continue;
     }
 
@@ -321,15 +393,15 @@ export async function exportLessonPlanToDocx(
     const merged = trySectionMerge(block.goc, block.so, block.kt);
     if (merged) {
       if (merged.beforeTable.length > 0) {
-        children.push(...contentLinesToParagraphs(merged.beforeTable, equations));
+        children.push(...contentLinesToParagraphs(merged.beforeTable, equations, images));
       }
-      children.push(buildMergedTable(merged, equations), new Paragraph({}));
+      children.push(buildMergedTable(merged, equations, images), new Paragraph({}));
       continue;
     }
 
     const gocCell = new TableCell({
       width: { size: hasSo && hasKt ? 50 : hasSo || hasKt ? 62 : 100, type: WidthType.PERCENTAGE },
-      children: textBlockToParagraphs(block.goc, equations),
+      children: textBlockToParagraphs(block.goc, equations, images),
       margins: { top: 120, bottom: 120, left: 120, right: 120 },
     });
 
@@ -343,7 +415,7 @@ export async function exportLessonPlanToDocx(
               children: [new TextRun({ text: 'Năng lực số', bold: true, color: '2F6FA8', size: 18 })],
               spacing: { after: 80 },
             }),
-            ...textBlockToParagraphs(block.so, equations),
+            ...textBlockToParagraphs(block.so, equations, images),
           ],
           margins: { top: 120, bottom: 120, left: 120, right: 120 },
         })
@@ -358,7 +430,7 @@ export async function exportLessonPlanToDocx(
               children: [new TextRun({ text: 'Giáo dục hòa nhập (HSKT)', bold: true, color: 'B8681A', size: 18 })],
               spacing: { after: 80 },
             }),
-            ...textBlockToParagraphs(block.kt, equations),
+            ...textBlockToParagraphs(block.kt, equations, images),
           ],
           margins: { top: 120, bottom: 120, left: 120, right: 120 },
         })
@@ -377,7 +449,40 @@ export async function exportLessonPlanToDocx(
     );
   }
 
-  const doc = new Document({ sections: [{ properties: {}, children }] });
+  const doc = new Document({
+    // Đặt font/size mặc định CHO TOÀN BỘ văn bản (Times New Roman 12pt — chuẩn
+    // soạn thảo văn bản hành chính/giáo án VN) ở một chỗ duy nhất, thay vì phải
+    // set lặp lại `font`/`size` trên từng TextRun rải rác khắp file — mọi đoạn
+    // văn/heading không tự khai báo font riêng sẽ tự động thừa hưởng từ đây.
+    styles: {
+      default: {
+        document: {
+          run: { font: BODY_FONT, size: BODY_SIZE_HALF_PT },
+          paragraph: { spacing: { line: 276, lineRule: 'auto' } }, // ~1.15 dòng, đọc thoáng hơn mặc định
+        },
+        heading1: {
+          run: { font: BODY_FONT, size: 32, bold: true },
+          paragraph: { spacing: { before: 240, after: 120 } },
+        },
+        heading2: {
+          run: { font: BODY_FONT, size: 28, bold: true },
+          paragraph: { spacing: { before: 200, after: 100 } },
+        },
+        heading3: {
+          run: { font: BODY_FONT, size: 26, bold: true },
+          paragraph: { spacing: { before: 160, after: 80 } },
+        },
+      },
+    },
+    sections: [
+      {
+        properties: {
+          page: { margin: PAGE_MARGIN },
+        },
+        children,
+      },
+    ],
+  });
   const blob = await Packer.toBlob(doc);
   saveAs(blob, fileName.endsWith('.docx') ? fileName : `${fileName}.docx`);
 }

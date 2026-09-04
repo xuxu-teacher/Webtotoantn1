@@ -277,6 +277,7 @@ export default function App() {
                 <LessonPlanPreview
                   markdown={result.markdown}
                   equations={parsedDoc?.equations || {}}
+                  images={parsedDoc?.images || {}}
                   weekNumber={weekNumber}
                   durationPeriods={durationPeriods}
                 />
@@ -287,6 +288,7 @@ export default function App() {
                   exportLessonPlanToDocx(
                     result.markdown,
                     parsedDoc?.equations || {},
+                    parsedDoc?.images || {},
                     `KHBD_${lessonTitle || 'bai-day'}`,
                     headerNote,
                     weekNumber,
