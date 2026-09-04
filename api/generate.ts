@@ -6,7 +6,13 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 // như KHBD). Nếu muốn chất lượng cao hơn (chấp nhận chậm/đắt hơn), đổi thành
 // "gemini-3.1-pro-preview" qua biến môi trường GEMINI_MODEL.
 const MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
-const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
+// Model DỰ PHÒNG — khi MODEL chính bị Google báo "quá tải" (503) dù đã thử lại
+// nhiều lần, tự động chuyển sang model này thử thêm 1 lần trước khi báo lỗi
+// cho giáo viên. Đặt khác dòng model với MODEL để giảm khả năng cả hai cùng
+// quá tải một lúc (các model "flash" hay bị quá tải đồng loạt vào giờ cao điểm
+// hơn "pro"). Có thể đổi qua biến môi trường GEMINI_FALLBACK_MODEL.
+const FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-2.5-flash';
+const urlFor = (model: string) => `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
 interface LessonPlanRequestBody {
   subject: string;
@@ -206,8 +212,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 
-  async function callGemini(includeThinkingConfig: boolean) {
-    return fetch(GEMINI_API_URL, {
+  async function callGemini(model: string, includeThinkingConfig: boolean) {
+    return fetch(urlFor(model), {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -218,24 +224,61 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 
+  function sleep(ms: number) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
+  // 503 (UNAVAILABLE, "quá tải") và 429 (rate limit) là lỗi TẠM THỜI ở phía
+  // Google, không phải lỗi ở code hay ở dữ liệu giáo án của giáo viên -> tự
+  // thử lại vài lần với thời gian chờ tăng dần trước khi coi là thất bại thật
+  // sự. Vercel giới hạn hàm này 60s (xem vercel.json) nên số lần thử + thời
+  // gian chờ được canh để không vượt quá ngân sách đó.
+  const RETRYABLE_STATUSES = new Set([429, 503]);
+  const RETRY_DELAYS_MS = [1500, 3500];
+
+  async function callGeminiWithRetry(model: string, includeThinkingConfig: boolean) {
+    let response = await callGemini(model, includeThinkingConfig);
+    let attempts = 1;
+    for (const delay of RETRY_DELAYS_MS) {
+      if (response.ok || !RETRYABLE_STATUSES.has(response.status)) break;
+      await sleep(delay);
+      response = await callGemini(model, includeThinkingConfig);
+      attempts++;
+    }
+    return { response, attempts };
+  }
+
   try {
-    let response = await callGemini(true);
+    let { response, attempts } = await callGeminiWithRetry(MODEL, true);
 
     if (!response.ok && response.status === 400) {
       const firstErrText = await response.text();
       if (firstErrText.includes('INVALID_ARGUMENT')) {
         // Model hiện tại (vd một số bản "lite") có thể không nhận thinkingConfig
         // theo dạng này -> thử lại một lần, bỏ hẳn tham số đó.
-        response = await callGemini(false);
+        ({ response, attempts } = await callGeminiWithRetry(MODEL, false));
       } else {
         res.status(400).json({ error: `Lỗi từ Gemini API: ${firstErrText}` });
         return;
       }
     }
 
+    // Model chính vẫn quá tải sau khi đã thử lại nhiều lần -> thử 1 lần với
+    // model dự phòng trước khi báo lỗi hẳn cho giáo viên.
+    if (!response.ok && RETRYABLE_STATUSES.has(response.status) && FALLBACK_MODEL !== MODEL) {
+      await sleep(1500);
+      ({ response, attempts } = await callGeminiWithRetry(FALLBACK_MODEL, true));
+    }
+
     if (!response.ok) {
       const errText = await response.text();
-      res.status(response.status).json({ error: `Lỗi từ Gemini API: ${errText}` });
+      if (RETRYABLE_STATUSES.has(response.status)) {
+        res.status(503).json({
+          error: `Hệ thống AI (Gemini) đang quá tải, đã tự động thử lại ${attempts} lần nhưng vẫn chưa được. Đây là lỗi tạm thời từ phía Google (KHÔNG PHẢI lỗi trong giáo án hay tài khoản của bạn) — vui lòng đợi khoảng 30 giây đến 1 phút rồi bấm "Soạn KHBD" lại.`,
+        });
+      } else {
+        res.status(response.status).json({ error: `Lỗi từ Gemini API: ${errText}` });
+      }
       return;
     }
 
