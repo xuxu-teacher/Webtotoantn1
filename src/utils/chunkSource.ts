@@ -43,9 +43,15 @@ function splitIntoBlocks(text: string): string[] {
       continue;
     }
 
-    // Bảng Markdown: mọi dòng thuộc bảng phải đi liền nhau trong CÙNG một khối,
-    // dừng gộp ngay khi gặp dòng không còn là dòng bảng nữa.
-    if (currentIsTable && !isTableLine) {
+    // Ranh giới bảng Markdown <-> văn bản thường, theo CẢ HAI CHIỀU, luôn là
+    // điểm cắt an toàn — cắt ở đây không bao giờ làm hỏng một bảng (mọi dòng
+    // thuộc cùng một bảng luôn liền kề nhau). Bug đã sửa: bản trước chỉ coi
+    // chiều "đang trong bảng -> ra khỏi bảng" là ranh giới, bỏ sót chiều "đang
+    // trong đoạn văn -> vào bảng" — khiến một đoạn văn/tiêu đề đứng NGAY TRƯỚC
+    // một bảng lớn (rất phổ biến trong giáo án Việt Nam, không có dòng trống
+    // ngăn cách) bị dính liền vào bảng thành MỘT khối khổng lồ không cắt được,
+    // có khi gộp gần như CẢ giáo án thành 1 khối duy nhất -> chia nhỏ vô tác dụng.
+    if (isTableLine !== currentIsTable) {
       flush();
       currentIsTable = isTableLine;
       current.push(line);
