@@ -1,5 +1,4 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
-import { parseKhbd } from '../src/utils/khbdParser';
 
 // Kiểm tra https://ai.google.dev/gemini-api/docs/models để lấy model ID mới nhất
 // trước khi triển khai — model ID có thể thay đổi/nghỉ hưu theo thời gian.
@@ -150,6 +149,23 @@ ${body.equationLegend || '(không có công thức nào)'}
 NHẮC LẠI LẦN CUỐI (quan trọng nhất, đọc kỹ trước khi viết): ${hsktReminder}`;
 }
 
+// Đếm nhanh số mục (khối GOC) và số mục đang THIẾU khối KT không rỗng, bằng
+// regex đơn giản trên chính chuỗi markdown thô — KHÔNG import bộ phân tích đầy
+// đủ từ src/utils/khbdParser.ts, vì import xuyên thư mục đó từng làm serverless
+// function bị crash (FUNCTION_INVOCATION_FAILED) khi đóng gói trên Vercel. Bộ
+// đếm này không cần chính xác tuyệt đối như parser thật — chỉ để đưa ra cảnh
+// báo tham khảo cho giáo viên.
+function countSectionsMissingKt(markdown: string): { total: number; missing: number } {
+  const sections = markdown.split(/<<<GOC\b/).slice(1);
+  let missing = 0;
+  for (const sec of sections) {
+    const ktMatch = sec.match(/<<<KT[^\n]*\n([\s\S]*?)\nKT>>>/);
+    const hasKt = Boolean(ktMatch && ktMatch[1].trim().length > 0);
+    if (!hasKt) missing++;
+  }
+  return { total: sections.length, missing };
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Chỉ hỗ trợ POST' });
@@ -247,20 +263,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // còn lại (đúng kiểu lỗi thực tế đã gặp: một mục là bảng có sẵn cột NLS thì
     // bị bỏ luôn cả khối KT dù không liên quan) — kiểm tra tổng thể trước đây
     // sẽ bỏ lọt trường hợp này vì chỉ cần 1 mục có KT là qua được.
-    try {
-      const blocks = parseKhbd(markdown);
-      const sections = blocks.filter((b) => b.type === 'section') as Array<{ so: string; kt: string }>;
-      const hasHskt = (body.accommodation?.types || []).length > 0;
-      if (hasHskt && sections.length > 0) {
-        const missingKt = sections.filter((s) => !s.kt.trim()).length;
-        if (missingKt === sections.length) {
-          warnings.push('Lớp có HSKT nhưng AI không tạo cột giáo dục hòa nhập ở mục nào — có thể cần soạn lại hoặc bổ sung thủ công.');
-        } else if (missingKt > 0) {
-          warnings.push(`Lớp có HSKT nhưng ${missingKt}/${sections.length} mục đang THIẾU cột giáo dục hòa nhập — kiểm tra kỹ bản xem trước, bổ sung thủ công cho các mục còn thiếu nếu cần.`);
-        }
+    const hasHskt = (body.accommodation?.types || []).length > 0;
+    if (hasHskt) {
+      const { total, missing } = countSectionsMissingKt(markdown);
+      if (total > 0 && missing === total) {
+        warnings.push('Lớp có HSKT nhưng AI không tạo cột giáo dục hòa nhập ở mục nào — có thể cần soạn lại hoặc bổ sung thủ công.');
+      } else if (missing > 0) {
+        warnings.push(`Lớp có HSKT nhưng ${missing}/${total} mục đang THIẾU cột giáo dục hòa nhập — kiểm tra kỹ bản xem trước, bổ sung thủ công cho các mục còn thiếu nếu cần.`);
       }
-    } catch {
-      // Không để lỗi đếm thống kê làm hỏng cả phản hồi chính — bỏ qua nếu parse lỗi.
     }
 
     res.status(200).json({ markdown, warnings });
