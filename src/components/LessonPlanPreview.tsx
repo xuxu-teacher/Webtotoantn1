@@ -1,6 +1,8 @@
 import EquationView from './EquationView';
 import MathRenderer from './MathRenderer';
 import { parseKhbd } from '../utils/khbdParser';
+import { parseLatexSafe } from '../utils/latexToMathNode';
+import { mathNodeToMathml } from '../utils/mathToMathml';
 import type { EquationEntry } from '../types';
 
 interface Props {
@@ -16,7 +18,11 @@ function renderInline(text: string, key: string, equations: Record<string, Equat
       return <EquationView key={`${key}-${i}`} entry={equations[eqMatch[1]]} id={eqMatch[1]} />;
     }
     if (part.startsWith('$') && part.endsWith('$')) {
-      return <MathRenderer key={`${key}-${i}`} latex={part.slice(1, -1)} />;
+      // Công thức AI viết thêm (không có trong file gốc) -> phân tích LaTeX
+      // thành MathNode rồi render bằng chính pipeline MathML dùng cho công
+      // thức gốc, để không hiện chữ LaTeX thô ("\left(", "^{...}") ra bài.
+      const mathml = mathNodeToMathml(parseLatexSafe(part.slice(1, -1)));
+      return <MathRenderer key={`${key}-${i}`} mathml={mathml} />;
     }
     return <span key={`${key}-${i}`}>{part}</span>;
   });
@@ -47,13 +53,28 @@ export default function LessonPlanPreview({ markdown, equations }: Props) {
         if (block.type === 'text') {
           return <p key={idx}>{renderInline(block.text, String(idx), equations)}</p>;
         }
+
+        const hasSo = block.so.trim().length > 0;
+        const hasKt = block.kt.trim().length > 0;
+        const colCount = 1 + (hasSo ? 1 : 0) + (hasKt ? 1 : 0);
+
         return (
-          <div className="khbd-row" key={idx}>
-            <div className="khbd-col khbd-col--left">{renderMultiline(block.left, `${idx}-l`, equations)}</div>
-            <div className="khbd-col khbd-col--right">
-              <p className="khbd-col__label">Năng lực số &amp; Giáo dục hòa nhập</p>
-              {renderMultiline(block.right, `${idx}-r`, equations)}
+          <div className={`khbd-row khbd-row--cols-${colCount}`} key={idx}>
+            <div className="khbd-col khbd-col--goc">
+              {renderMultiline(block.goc, `${idx}-goc`, equations)}
             </div>
+            {hasSo && (
+              <div className="khbd-col khbd-col--so">
+                <p className="khbd-col__label khbd-col__label--so">Năng lực số</p>
+                {renderMultiline(block.so, `${idx}-so`, equations)}
+              </div>
+            )}
+            {hasKt && (
+              <div className="khbd-col khbd-col--kt">
+                <p className="khbd-col__label khbd-col__label--kt">Giáo dục hòa nhập (HSKT)</p>
+                {renderMultiline(block.kt, `${idx}-kt`, equations)}
+              </div>
+            )}
           </div>
         );
       })}

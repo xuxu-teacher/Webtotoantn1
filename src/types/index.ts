@@ -84,8 +84,9 @@ export interface LessonPlanRequest {
 }
 
 export interface GeneratedLessonPlan {
-  // Nội dung KHBD ở định dạng có cấu trúc riêng (xem lessonPlanTemplate.ts):
-  // heading thường (#, ##, ###) + khối 2 cột <<<TRAI ... TRAI>>> <<<PHAI ... PHAI>>>
+  // Nội dung KHBD ở định dạng có cấu trúc riêng (xem khbdParser.ts):
+  // heading thường (#, ##, ###) + khối <<<GOC ... GOC>>> (bắt buộc) + tuỳ chọn
+  // <<<SO ... SO>>> (năng lực số) và/hoặc <<<KT ... KT>>> (giáo dục hòa nhập).
   // Placeholder [[EQ:CTx]] PHẢI được AI giữ nguyên, không viết lại thành LaTeX.
   markdown: string;
   warnings: string[];

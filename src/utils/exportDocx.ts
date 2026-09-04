@@ -16,6 +16,7 @@ import {
 import { saveAs } from 'file-saver';
 import { parseKhbd } from './khbdParser';
 import { mathNodeToDocxComponents } from './mathToDocx';
+import { parseLatexSafe } from './latexToMathNode';
 import type { EquationEntry } from '../types';
 
 type ParaChild = TextRun | DocxMath | ImageRun;
@@ -89,7 +90,10 @@ function inlineToRuns(line: string, equations: Record<string, EquationEntry>): P
       continue;
     }
     if (part.startsWith('$') && part.endsWith('$')) {
-      runs.push(new TextRun({ text: part.slice(1, -1), italics: true, font: 'Cambria Math' }));
+      // Công thức AI viết thêm (không thuộc file gốc) -> dựng lại thành object
+      // công thức Word thật (giống công thức gốc), không ghi thẳng mã LaTeX ra
+      // làm chữ nghiêng nữa (đó là nguyên nhân lỗi hiển thị kiểu "\left(...").
+      runs.push(new DocxMath({ children: mathNodeToDocxComponents(parseLatexSafe(part.slice(1, -1))) }));
       continue;
     }
     if (part) runs.push(new TextRun({ text: part }));
@@ -114,12 +118,14 @@ function textBlockToParagraphs(text: string, equations: Record<string, EquationE
 }
 
 /**
- * Xuất KHBD ra file .docx: mỗi mục là bảng 2 cột thật — cột trái là nội dung
- * giáo án, cột phải là năng lực số & giáo dục hòa nhập, có nền màu phân biệt.
- * Công thức Word gốc (Insert Equation) được dựng lại thành object công thức
- * thật; công thức MathType đã chuyển qua máy chủ riêng hiện dạng LaTeX; công
- * thức OLE có ảnh xem trước PNG/JPEG được nhúng lại bằng ảnh thật — chỉ khi
- * hoàn toàn không có gì mới còn ghi chú văn bản.
+ * Xuất KHBD ra file .docx: mỗi mục là một bảng thật với 1-3 cột — cột "gốc"
+ * (nguyên văn giáo án, luôn có), cột "năng lực số" và cột "giáo dục hòa nhập"
+ * chỉ xuất hiện khi mục đó thực sự có nội dung bổ sung (mỗi loại một cột màu
+ * nền riêng, không gộp chung). Công thức Word gốc (Insert Equation) được dựng
+ * lại thành object công thức thật; công thức MathType đã chuyển qua máy chủ
+ * riêng hiện dạng LaTeX; công thức OLE có ảnh xem trước PNG/JPEG được nhúng
+ * lại bằng ảnh thật; công thức MỚI do AI viết thêm (không có trong file gốc)
+ * cũng được dựng thành object công thức thật thay vì in nguyên mã LaTeX.
  *
  * headerNote (tự ghi, ví dụ tên trường/tổ chuyên môn) được in thành các dòng
  * căn giữa ở đầu văn bản, trước toàn bộ nội dung KHBD.
@@ -159,34 +165,53 @@ export async function exportLessonPlanToDocx(
       continue;
     }
 
-    // block.type === 'section' -> bảng 2 cột thật
-    const leftParagraphs = textBlockToParagraphs(block.left, equations);
-    const rightParagraphs = [
-      new Paragraph({
-        children: [new TextRun({ text: 'Năng lực số & Giáo dục hòa nhập', bold: true, color: 'C17A2B', size: 18 })],
-        spacing: { after: 80 },
-      }),
-      ...textBlockToParagraphs(block.right, equations),
-    ];
+    // block.type === 'section' -> bảng nhiều cột thật: GOC luôn có, SO/KT tuỳ mục có hay không
+    const hasSo = block.so.trim().length > 0;
+    const hasKt = block.kt.trim().length > 0;
+
+    const gocCell = new TableCell({
+      width: { size: hasSo && hasKt ? 50 : hasSo || hasKt ? 62 : 100, type: WidthType.PERCENTAGE },
+      children: textBlockToParagraphs(block.goc, equations),
+      margins: { top: 120, bottom: 120, left: 120, right: 120 },
+    });
+
+    const otherWidth = hasSo && hasKt ? 25 : 38;
+    const soCell = hasSo
+      ? new TableCell({
+          width: { size: otherWidth, type: WidthType.PERCENTAGE },
+          shading: { type: ShadingType.CLEAR, fill: 'DCE6F7' },
+          children: [
+            new Paragraph({
+              children: [new TextRun({ text: 'Năng lực số', bold: true, color: '2F6FA8', size: 18 })],
+              spacing: { after: 80 },
+            }),
+            ...textBlockToParagraphs(block.so, equations),
+          ],
+          margins: { top: 120, bottom: 120, left: 120, right: 120 },
+        })
+      : null;
+
+    const ktCell = hasKt
+      ? new TableCell({
+          width: { size: otherWidth, type: WidthType.PERCENTAGE },
+          shading: { type: ShadingType.CLEAR, fill: 'F2E2C8' },
+          children: [
+            new Paragraph({
+              children: [new TextRun({ text: 'Giáo dục hòa nhập (HSKT)', bold: true, color: 'B8681A', size: 18 })],
+              spacing: { after: 80 },
+            }),
+            ...textBlockToParagraphs(block.kt, equations),
+          ],
+          margins: { top: 120, bottom: 120, left: 120, right: 120 },
+        })
+      : null;
 
     children.push(
       new Table({
         width: { size: 100, type: WidthType.PERCENTAGE },
         rows: [
           new TableRow({
-            children: [
-              new TableCell({
-                width: { size: 62, type: WidthType.PERCENTAGE },
-                children: leftParagraphs,
-                margins: { top: 120, bottom: 120, left: 120, right: 120 },
-              }),
-              new TableCell({
-                width: { size: 38, type: WidthType.PERCENTAGE },
-                shading: { type: ShadingType.CLEAR, fill: 'F2E2C8' },
-                children: rightParagraphs,
-                margins: { top: 120, bottom: 120, left: 120, right: 120 },
-              }),
-            ],
+            children: [gocCell, soCell, ktCell].filter((c): c is TableCell => c !== null),
           }),
         ],
       }),
