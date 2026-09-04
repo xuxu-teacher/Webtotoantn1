@@ -71,6 +71,10 @@ KT>>>
    $...$, nhưng CHỈ dùng cú pháp đơn giản: chữ/số, ^{...} (số mũ), _{...} (chỉ số dưới),
    \\frac{a}{b}, \\sqrt{a}, \\left( \\right). KHÔNG dùng các lệnh LaTeX phức tạp/hiếm khác.
    Không lạm dụng — chỉ thêm công thức mới khi thực sự cần thiết cho ví dụ minh hoạ.
+8. TUYỆT ĐỐI KHÔNG viết bất kỳ lời giải thích, liệt kê, ghi chú, hay "diễn giải trước" nào
+   về cách bạn hiểu/xử lý ngữ liệu, placeholder, hay chú thích (ct: ...) — không liệt kê
+   bảng ánh xạ công thức, không tóm tắt kế hoạch trước khi viết. TRẢ LỜI BẮT ĐẦU NGAY bằng
+   heading "# " đầu tiên, không có bất kỳ câu chữ nào phía trước.
 
 Chỉ trả lời bằng đúng nội dung KHBD theo định dạng trên. Không thêm lời chào, không giải
 thích, không markdown code fence.`;

@@ -80,6 +80,10 @@ KT>>>
    $...$, nhưng CHỈ dùng cú pháp đơn giản: chữ/số, ^{...} (số mũ), _{...} (chỉ số dưới),
    \\frac{a}{b}, \\sqrt{a}, \\left( \\right). KHÔNG dùng các lệnh LaTeX phức tạp/hiếm khác.
    Không lạm dụng — chỉ thêm công thức mới khi thực sự cần thiết cho ví dụ minh hoạ.
+8. TUYỆT ĐỐI KHÔNG viết bất kỳ lời giải thích, liệt kê, ghi chú, hay "diễn giải trước" nào
+   về cách bạn hiểu/xử lý ngữ liệu, placeholder, hay chú thích (ct: ...) — không liệt kê
+   bảng ánh xạ công thức, không tóm tắt kế hoạch trước khi viết. TRẢ LỜI BẮT ĐẦU NGAY bằng
+   heading "# " đầu tiên, không có bất kỳ câu chữ nào phía trước.
 
 Chỉ trả lời bằng đúng nội dung KHBD theo định dạng trên. Không thêm lời chào, không giải
 thích, không markdown code fence.`;
@@ -137,7 +141,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       body: JSON.stringify({
         system_instruction: { parts: [{ text: buildSystemPrompt() }] },
         contents: [{ role: 'user', parts: [{ text: buildUserPrompt(body) }] }],
-        generationConfig: { maxOutputTokens: 8000 },
+        generationConfig: {
+          // Cột GOC phải chép nguyên văn toàn bộ giáo án gốc + thêm cột SO/KT
+          // -> output có thể dài hơn nhiều so với việc chỉ tóm tắt/viết lại,
+          // nên cần ngân sách token lớn để không bị cắt giữa chừng (MAX_TOKENS).
+          maxOutputTokens: 32768,
+          // Việc này chủ yếu là tuân thủ định dạng + chép lại đúng, không cần
+          // suy luận sâu -> tắt "thinking" để dành trọn ngân sách token cho nội
+          // dung thật, tránh vừa tốn token vừa có nguy cơ rò rỉ suy nghĩ ra bài.
+          thinkingConfig: { thinkingBudget: 0 },
+        },
       }),
     });
 
@@ -156,13 +169,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const markdown = (candidate.content?.parts || [])
-      .filter((p: any) => typeof p.text === 'string')
+      .filter((p: any) => typeof p.text === 'string' && !p.thought)
       .map((p: any) => p.text)
       .join('\n');
 
     const warnings: string[] = [];
     if (candidate.finishReason && candidate.finishReason !== 'STOP') {
-      warnings.push(`Phản hồi có thể chưa đầy đủ (finishReason: ${candidate.finishReason}) — kiểm tra lại bản xem trước trước khi dùng.`);
+      const extra =
+        candidate.finishReason === 'MAX_TOKENS'
+          ? ' Giáo án gốc có thể quá dài — thử giảm bớt nội dung nguồn hoặc chia soạn theo từng phần nhỏ hơn.'
+          : '';
+      warnings.push(`Phản hồi có thể chưa đầy đủ (finishReason: ${candidate.finishReason}).${extra} Kiểm tra lại bản xem trước trước khi dùng.`);
     }
     if (!markdown.includes('<<<GOC')) {
       warnings.push('AI có thể chưa tuân thủ đúng định dạng cột yêu cầu — kiểm tra lại bản xem trước trước khi dùng.');
