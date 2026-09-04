@@ -265,17 +265,21 @@ export default function App() {
                 </div>
               )}
               <div className="preview-panel">
-                {(headerNote.trim() || weekNumber.trim()) && (
+                {headerNote.trim() && (
                   <div className="letterhead-preview">
                     {headerNote.split('\n').filter(Boolean).map((line, i) => (
                       <p key={i} className={i === 0 ? 'letterhead-preview__main' : ''}>
                         {line}
                       </p>
                     ))}
-                    {weekNumber.trim() && <p>Tuần thực hiện: {weekNumber.trim()}</p>}
                   </div>
                 )}
-                <LessonPlanPreview markdown={result.markdown} equations={parsedDoc?.equations || {}} />
+                <LessonPlanPreview
+                  markdown={result.markdown}
+                  equations={parsedDoc?.equations || {}}
+                  weekNumber={weekNumber}
+                  durationPeriods={durationPeriods}
+                />
               </div>
               <button
                 className="btn btn--secondary"
@@ -285,7 +289,8 @@ export default function App() {
                     parsedDoc?.equations || {},
                     `KHBD_${lessonTitle || 'bai-day'}`,
                     headerNote,
-                    weekNumber
+                    weekNumber,
+                    durationPeriods
                   )
                 }
               >

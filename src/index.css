@@ -572,6 +572,13 @@ textarea:focus-visible {
   margin: 0 0 12px;
 }
 
+.lesson-preview__subtitle {
+  color: var(--ink-soft);
+  font-weight: 600;
+  font-size: 0.9rem;
+  margin: -6px 0 16px;
+}
+
 .lesson-preview h2 {
   font-size: 1.15rem;
   margin: 24px 0 10px;

@@ -165,7 +165,8 @@ export async function exportLessonPlanToDocx(
   equations: Record<string, EquationEntry>,
   fileName: string,
   headerNote?: string,
-  weekNumber?: string
+  weekNumber?: string,
+  durationPeriods?: number
 ) {
   const blocks = parseKhbd(markdown);
   const children: (Paragraph | Table)[] = [];
@@ -177,27 +178,34 @@ export async function exportLessonPlanToDocx(
         new Paragraph({
           alignment: AlignmentType.CENTER,
           children: [new TextRun({ text: line.trim(), bold: idx === 0, size: idx === 0 ? 24 : 20 })],
-          spacing: { after: idx === headerLines.length - 1 && !weekNumber?.trim() ? 240 : 40 },
+          spacing: { after: idx === headerLines.length - 1 ? 240 : 40 },
         })
       );
     });
   }
 
-  if (weekNumber?.trim()) {
-    children.push(
-      new Paragraph({
-        alignment: AlignmentType.CENTER,
-        children: [new TextRun({ text: `Tuần thực hiện: ${weekNumber.trim()}`, size: 20 })],
-        spacing: { after: 240 },
-      })
-    );
-  }
-
+  // "Tuần thực hiện" + "Số tiết" in ngay dưới tiêu đề bài (heading đầu tiên do
+  // AI sinh ra) — không in ở đầu văn bản trước cả tiêu đề, vì đây là hai dòng
+  // thông tin đi kèm bài dạy chứ không phải phần header trường/tổ chuyên môn.
+  const subtitleParts = [
+    weekNumber?.trim() ? `Tuần thực hiện: ${weekNumber.trim()}` : '',
+    durationPeriods ? `Số tiết: ${durationPeriods}` : '',
+  ].filter(Boolean);
+  let subtitleInserted = subtitleParts.length === 0; // không có gì để chèn -> coi như đã xong
 
   for (const block of blocks) {
     if (block.type === 'heading') {
       const headingLevel = block.level === 1 ? HeadingLevel.HEADING_1 : block.level === 2 ? HeadingLevel.HEADING_2 : HeadingLevel.HEADING_3;
       children.push(new Paragraph({ heading: headingLevel, children: inlineToRuns(block.text, equations), spacing: { before: 240, after: 120 } }));
+      if (!subtitleInserted) {
+        children.push(
+          new Paragraph({
+            children: [new TextRun({ text: subtitleParts.join('   —   '), bold: true, size: 20 })],
+            spacing: { after: 200 },
+          })
+        );
+        subtitleInserted = true;
+      }
       continue;
     }
 

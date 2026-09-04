@@ -1,3 +1,4 @@
+import { Fragment } from 'react';
 import EquationView from './EquationView';
 import MathRenderer from './MathRenderer';
 import { parseKhbd } from '../utils/khbdParser';
@@ -9,6 +10,8 @@ import type { EquationEntry } from '../types';
 interface Props {
   markdown: string;
   equations: Record<string, EquationEntry>;
+  weekNumber?: string;
+  durationPeriods?: number;
 }
 
 function renderInline(text: string, key: string, equations: Record<string, EquationEntry>) {
@@ -63,15 +66,27 @@ function renderMultiline(text: string, keyPrefix: string, equations: Record<stri
   });
 }
 
-export default function LessonPlanPreview({ markdown, equations }: Props) {
+export default function LessonPlanPreview({ markdown, equations, weekNumber, durationPeriods }: Props) {
   const blocks = parseKhbd(markdown);
+  const firstHeadingIdx = blocks.findIndex((b) => b.type === 'heading');
+  const subtitleParts = [
+    weekNumber?.trim() ? `Tuần thực hiện: ${weekNumber.trim()}` : '',
+    durationPeriods ? `Số tiết: ${durationPeriods}` : '',
+  ].filter(Boolean);
 
   return (
     <div className="lesson-preview">
       {blocks.map((block, idx) => {
         if (block.type === 'heading') {
           const Tag = (`h${block.level}` as unknown) as 'h1' | 'h2' | 'h3';
-          return <Tag key={idx}>{block.text}</Tag>;
+          return (
+            <Fragment key={idx}>
+              <Tag>{block.text}</Tag>
+              {idx === firstHeadingIdx && subtitleParts.length > 0 && (
+                <p className="lesson-preview__subtitle">{subtitleParts.join('  —  ')}</p>
+              )}
+            </Fragment>
+          );
         }
         if (block.type === 'text') {
           return <p key={idx}>{renderInline(block.text, String(idx), equations)}</p>;

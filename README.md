@@ -66,6 +66,10 @@ có thể mất 30–90 giây, đôi khi hơn với giáo án rất dài. Vài �
   `gemini-3.5-flash`. Kiểm tra model mới nhất tại https://ai.google.dev/gemini-api/docs/models
   trước khi đổi, vì tên/khả năng model có thể thay đổi theo thời gian.
 
+Nếu bạn thấy lỗi `FUNCTION_INVOCATION_TIMEOUT` (mã 504): đây CHÍNH XÁC là trường hợp trên —
+Vercel đã tự ngắt vì soạn quá `maxDuration` đã đặt. Không phải lỗi code, mà là giáo án đưa
+vào quá dài so với thời gian cho phép trên gói hiện tại — thử một trong hai cách ở trên.
+
 ## Kiểm tra cấu hình API key
 
 Truy cập `/api/health` sẽ trả về `{ "hasApiKey": true|false }`. App tự gọi endpoint

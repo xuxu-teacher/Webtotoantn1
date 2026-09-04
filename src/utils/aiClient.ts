@@ -22,6 +22,14 @@ export async function generateLessonPlan(req: LessonPlanRequest): Promise<Genera
 
   if (!res.ok) {
     const errBody = await res.text().catch(() => '');
+    if (res.status === 504) {
+      throw new Error(
+        'Sinh KHBD thất bại (504): Server đã chạy hết thời gian cho phép (giáo án này dài hơn ' +
+          'mức server có thể xử lý trong thời gian tối đa hiện tại). Thử: (1) đổi biến môi trường ' +
+          'GEMINI_MODEL sang "gemini-3.5-flash-lite" để soạn nhanh hơn, hoặc (2) nếu dùng gói Vercel ' +
+          'Pro, tăng "maxDuration" trong vercel.json lên 120–300 giây rồi deploy lại — xem README.'
+      );
+    }
     throw new Error(`Sinh KHBD thất bại (${res.status}): ${errBody || res.statusText}`);
   }
 
