@@ -1,4 +1,5 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
+import { parseKhbd } from '../src/utils/khbdParser';
 
 // Kiểm tra https://ai.google.dev/gemini-api/docs/models để lấy model ID mới nhất
 // trước khi triển khai — model ID có thể thay đổi/nghỉ hưu theo thời gian.
@@ -81,7 +82,11 @@ KT>>>
    chọn (áp dụng tiêu chuẩn giống mục 4 — một câu nhắc thoáng qua không tính là "đã có sẵn").
    LƯU Ý: một cột năng lực số/công nghệ có sẵn trong ngữ liệu gốc (dùng để quyết định bỏ
    khối SO ở mục 4) KHÔNG liên quan và KHÔNG được dùng làm lý do bỏ khối KT — đây là hai chủ
-   đề hoàn toàn khác nhau, quyết định độc lập với nhau.
+   đề hoàn toàn khác nhau, quyết định độc lập với nhau. VÍ DỤ CỤ THỂ: nếu ngữ liệu gốc của
+   một mục là bảng 3 cột "HOẠT ĐỘNG CỦA GV VÀ HS | SẢN PHẨM DỰ KIẾN | NLS" (đã có cột NLS
+   nói về năng lực số) và lớp CÓ HSKT, thì mục đó ĐÚNG là được bỏ khối SO (vì NLS đã có),
+   NHƯNG VẪN PHẢI viết khối KT đầy đủ (vì bảng đó KHÔNG có cột nào nói về hòa nhập/HSKT) —
+   TUYỆT ĐỐI không được bỏ luôn cả hai khối chỉ vì bảng đã có cột NLS.
    Khi viết, mô tả hành động điều chỉnh cụ thể của GV cho từng loại khuyết tật đã chọn, gắn
    với đúng nội dung của mục đó (không viết chung chung).
 6. Placeholder dạng [[EQ:CT1]], [[EQ:CT2]]... trong ngữ liệu gốc LÀ CÔNG THỨC TOÁN của bài.
@@ -236,8 +241,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!markdown.includes('<<<GOC')) {
       warnings.push('AI có thể chưa tuân thủ đúng định dạng cột yêu cầu — kiểm tra lại bản xem trước trước khi dùng.');
     }
-    if ((body.accommodation?.types || []).length > 0 && !markdown.includes('<<<KT')) {
-      warnings.push('Lớp có HSKT nhưng AI không tạo cột giáo dục hòa nhập ở mục nào — có thể cần soạn lại hoặc bổ sung thủ công.');
+
+    // Đếm CHI TIẾT theo từng mục (không chỉ kiểm tra "có ít nhất 1 khối KT trong
+    // cả bài") — vì AI có thể viết khối KT cho một vài mục rồi bỏ sót các mục
+    // còn lại (đúng kiểu lỗi thực tế đã gặp: một mục là bảng có sẵn cột NLS thì
+    // bị bỏ luôn cả khối KT dù không liên quan) — kiểm tra tổng thể trước đây
+    // sẽ bỏ lọt trường hợp này vì chỉ cần 1 mục có KT là qua được.
+    try {
+      const blocks = parseKhbd(markdown);
+      const sections = blocks.filter((b) => b.type === 'section') as Array<{ so: string; kt: string }>;
+      const hasHskt = (body.accommodation?.types || []).length > 0;
+      if (hasHskt && sections.length > 0) {
+        const missingKt = sections.filter((s) => !s.kt.trim()).length;
+        if (missingKt === sections.length) {
+          warnings.push('Lớp có HSKT nhưng AI không tạo cột giáo dục hòa nhập ở mục nào — có thể cần soạn lại hoặc bổ sung thủ công.');
+        } else if (missingKt > 0) {
+          warnings.push(`Lớp có HSKT nhưng ${missingKt}/${sections.length} mục đang THIẾU cột giáo dục hòa nhập — kiểm tra kỹ bản xem trước, bổ sung thủ công cho các mục còn thiếu nếu cần.`);
+        }
+      }
+    } catch {
+      // Không để lỗi đếm thống kê làm hỏng cả phản hồi chính — bỏ qua nếu parse lỗi.
     }
 
     res.status(200).json({ markdown, warnings });

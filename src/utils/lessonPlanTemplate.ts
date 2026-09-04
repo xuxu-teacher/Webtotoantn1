@@ -70,7 +70,11 @@ KT>>>
    chọn (áp dụng tiêu chuẩn giống mục 4 — một câu nhắc thoáng qua không tính là "đã có sẵn").
    LƯU Ý: một cột năng lực số/công nghệ có sẵn trong ngữ liệu gốc (dùng để quyết định bỏ
    khối SO ở mục 4) KHÔNG liên quan và KHÔNG được dùng làm lý do bỏ khối KT — đây là hai chủ
-   đề hoàn toàn khác nhau, quyết định độc lập với nhau.
+   đề hoàn toàn khác nhau, quyết định độc lập với nhau. VÍ DỤ CỤ THỂ: nếu ngữ liệu gốc của
+   một mục là bảng 3 cột "HOẠT ĐỘNG CỦA GV VÀ HS | SẢN PHẨM DỰ KIẾN | NLS" (đã có cột NLS
+   nói về năng lực số) và lớp CÓ HSKT, thì mục đó ĐÚNG là được bỏ khối SO (vì NLS đã có),
+   NHƯNG VẪN PHẢI viết khối KT đầy đủ (vì bảng đó KHÔNG có cột nào nói về hòa nhập/HSKT) —
+   TUYỆT ĐỐI không được bỏ luôn cả hai khối chỉ vì bảng đã có cột NLS.
    Khi viết, mô tả hành động điều chỉnh cụ thể của GV cho từng loại khuyết tật đã chọn, gắn
    với đúng nội dung của mục đó (không viết chung chung).
 6. Placeholder dạng [[EQ:CT1]], [[EQ:CT2]]... trong ngữ liệu gốc LÀ CÔNG THỨC TOÁN của bài.
