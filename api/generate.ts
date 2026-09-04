@@ -12,6 +12,22 @@ const MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
 // quá tải một lúc (các model "flash" hay bị quá tải đồng loạt vào giờ cao điểm
 // hơn "pro"). Có thể đổi qua biến môi trường GEMINI_FALLBACK_MODEL.
 const FALLBACK_MODEL = process.env.GEMINI_FALLBACK_MODEL || 'gemini-2.5-flash';
+// Model NHANH — dùng làm lựa chọn ĐẦU TIÊN khi giáo án gốc quá dài (xem
+// LONG_DOC_CHAR_THRESHOLD bên dưới), vì với giáo án dài, bản thân MỘT lượt
+// sinh nội dung bằng MODEL thường (dù không bị quá tải, không cần retry) đã
+// có thể tốn hơn 50-60s -> bị Vercel ngắt cứng thành 504 (khác hẳn lỗi quá
+// tải 503 mà retry ở trên xử lý được). Model "lite" xử lý nhanh hơn nhiều nên
+// giảm rủi ro này, đánh đổi bằng chất lượng có thể kém tinh tế hơn đôi chút —
+// chấp nhận được vì việc chính ở khối GOC chỉ là CHÉP LẠI nguyên văn, không
+// cần suy luận sâu. Có thể đổi qua biến môi trường GEMINI_LITE_MODEL, hoặc
+// tắt hẳn cơ chế tự chuyển này bằng GEMINI_DISABLE_AUTO_LITE=1.
+const LITE_MODEL = process.env.GEMINI_LITE_MODEL || 'gemini-3.5-flash-lite';
+const AUTO_LITE_DISABLED = process.env.GEMINI_DISABLE_AUTO_LITE === '1';
+// Ngưỡng độ dài (số ký tự) của phần ngữ liệu trích từ giáo án gốc, qua đó coi
+// là "giáo án dài" và ưu tiên dùng LITE_MODEL ngay từ lần thử đầu tiên. Con số
+// này là ước lượng thận trọng (không có cách nào biết trước chính xác thời
+// gian Gemini sẽ xử lý) — có thể tinh chỉnh dần qua thực tế sử dụng.
+const LONG_DOC_CHAR_THRESHOLD = 6000;
 const urlFor = (model: string) => `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 
 interface LessonPlanRequestBody {
@@ -202,6 +218,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const TIME_BUDGET_MS = 50_000; // chừa ~10s so với maxDuration=60 để kịp dựng + gửi response
   const remainingMs = () => TIME_BUDGET_MS - (Date.now() - startedAt);
 
+  // Giáo án gốc càng dài, một lượt sinh bằng model thường càng dễ vượt quá
+  // ngân sách 50-60s dù không hề bị quá tải (503) — đây là nguyên nhân khác
+  // hẳn với lỗi quá tải mà cơ chế retry ở dưới xử lý được. Vì vậy với giáo án
+  // dài, ưu tiên dùng LITE_MODEL ngay từ đầu để giảm hẳn rủi ro timeout.
+  const sourceLen = (body?.sourceContent || '').length;
+  const isLongDoc = !AUTO_LITE_DISABLED && sourceLen > LONG_DOC_CHAR_THRESHOLD;
+  const primaryModel = isLongDoc ? LITE_MODEL : MODEL;
+
   // Ngân sách token lớn vì khối GOC phải chép nguyên văn toàn bộ giáo án gốc +
   // thêm cột SO/KT -> output dài hơn nhiều so với việc chỉ tóm tắt/viết lại,
   // cần đủ chỗ để không bị cắt giữa chừng (MAX_TOKENS).
@@ -222,16 +246,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   }
 
+  // Nếu một lượt gọi Gemini (không hề bị 503/429, chỉ đơn giản là XỬ LÝ LÂU vì
+  // giáo án dài) chạy quá lâu, Vercel sẽ tự "giết" cả hàm ở mốc maxDuration mà
+  // KHÔNG cho code kịp trả JSON lỗi — client nhận một 504 trần trụi không rõ
+  // nguyên nhân. Để tránh việc này, TỰ ngắt (AbortController) mỗi lượt gọi
+  // Gemini trước khi hết ngân sách thời gian, để luôn còn cơ hội trả về một
+  // thông báo lỗi rõ ràng, đúng nguyên nhân cho giáo viên.
+  class GeminiTimeoutError extends Error {}
+  const RESPONSE_BUILD_BUFFER_MS = 4_000; // chừa thời gian đọc response + dựng + gửi JSON lỗi
+
   async function callGemini(model: string, includeThinkingConfig: boolean) {
-    return fetch(urlFor(model), {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        // Header (thay vì query param ?key=...) để key không bị lộ trong access log.
-        'x-goog-api-key': apiKey,
-      },
-      body: buildRequestBody(includeThinkingConfig),
-    });
+    const deadline = Math.max(remainingMs() - RESPONSE_BUILD_BUFFER_MS, 500);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), deadline);
+    try {
+      return await fetch(urlFor(model), {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          // Header (thay vì query param ?key=...) để key không bị lộ trong access log.
+          'x-goog-api-key': apiKey,
+        },
+        body: buildRequestBody(includeThinkingConfig),
+        signal: controller.signal,
+      });
+    } catch (err: any) {
+      if (err?.name === 'AbortError') {
+        throw new GeminiTimeoutError(
+          `Gemini (model "${model}") xử lý quá lâu (giáo án dài ${sourceLen.toLocaleString('vi-VN')} ký tự) — đã tự ngắt sau khi chờ quá thời gian cho phép.`
+        );
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   function sleep(ms: number) {
@@ -252,27 +300,65 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   const MIN_MS_FOR_ONE_MORE_TRY = 4_000;
 
   async function callGeminiWithRetry(model: string, includeThinkingConfig: boolean) {
-    let response = await callGemini(model, includeThinkingConfig);
+    let response: Response;
     let attempts = 1;
+    try {
+      response = await callGemini(model, includeThinkingConfig);
+    } catch (err) {
+      if (err instanceof GeminiTimeoutError) return { response: null, attempts, timeoutErr: err };
+      throw err;
+    }
     for (const delay of RETRY_DELAYS_MS) {
       if (response.ok || !RETRYABLE_STATUSES.has(response.status)) break;
       if (remainingMs() < delay + MIN_MS_FOR_ONE_MORE_TRY) break;
       await sleep(delay);
-      response = await callGemini(model, includeThinkingConfig);
+      try {
+        response = await callGemini(model, includeThinkingConfig);
+      } catch (err) {
+        if (err instanceof GeminiTimeoutError) return { response: null, attempts: attempts + 1, timeoutErr: err };
+        throw err;
+      }
       attempts++;
     }
-    return { response, attempts };
+    return { response, attempts, timeoutErr: undefined as GeminiTimeoutError | undefined };
   }
 
   try {
-    let { response, attempts } = await callGeminiWithRetry(MODEL, true);
+    let { response, attempts, timeoutErr } = await callGeminiWithRetry(primaryModel, true);
+
+    // Model chính hết giờ (không phải quá tải, chỉ đơn giản là chậm) -> nếu
+    // vẫn còn kha khá ngân sách và model chính KHÔNG phải là model nhanh
+    // (nghĩa là chưa thử phương án nhanh), thử ngay LITE_MODEL một lần; nếu
+    // không còn đủ thời gian hoặc đã là LITE_MODEL rồi, báo lỗi rõ ràng luôn.
+    if (timeoutErr && primaryModel !== LITE_MODEL && remainingMs() >= 15_000) {
+      ({ response, attempts, timeoutErr } = await callGeminiWithRetry(LITE_MODEL, true));
+    }
+
+    function sendTimeoutError(err: InstanceType<typeof GeminiTimeoutError>) {
+      res.status(503).json({
+        error: `${err.message} Đây là giáo án dài, cần nhiều thời gian xử lý hơn mức server hiện cho phép. Thử: (1) soạn lại — hệ thống sẽ tự ưu tiên model nhanh hơn cho giáo án dài, (2) chia nhỏ giáo án gốc thành từng phần rồi soạn riêng từng phần, hoặc (3) nếu dùng gói Vercel Pro, tăng "maxDuration" trong vercel.json lên 120-300 giây rồi deploy lại.`,
+      });
+    }
+
+    if (timeoutErr) {
+      sendTimeoutError(timeoutErr);
+      return;
+    }
+    if (!response) {
+      res.status(500).json({ error: 'Lỗi không xác định: không nhận được phản hồi từ Gemini.' });
+      return;
+    }
 
     if (!response.ok && response.status === 400) {
       const firstErrText = await response.text();
       if (firstErrText.includes('INVALID_ARGUMENT')) {
         // Model hiện tại (vd một số bản "lite") có thể không nhận thinkingConfig
         // theo dạng này -> thử lại một lần, bỏ hẳn tham số đó.
-        ({ response, attempts } = await callGeminiWithRetry(MODEL, false));
+        ({ response, attempts, timeoutErr } = await callGeminiWithRetry(primaryModel, false));
+        if (timeoutErr) {
+          sendTimeoutError(timeoutErr);
+          return;
+        }
       } else {
         res.status(400).json({ error: `Lỗi từ Gemini API: ${firstErrText}` });
         return;
@@ -288,23 +374,28 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // giữa chừng thành 504.
     const MIN_MS_FOR_FALLBACK_ATTEMPT = 20_000;
     if (
+      response &&
       !response.ok &&
       RETRYABLE_STATUSES.has(response.status) &&
-      FALLBACK_MODEL !== MODEL &&
+      FALLBACK_MODEL !== primaryModel &&
       remainingMs() >= MIN_MS_FOR_FALLBACK_ATTEMPT
     ) {
       await sleep(1500);
-      ({ response, attempts } = await callGeminiWithRetry(FALLBACK_MODEL, true));
+      ({ response, attempts, timeoutErr } = await callGeminiWithRetry(FALLBACK_MODEL, true));
+      if (timeoutErr) {
+        sendTimeoutError(timeoutErr);
+        return;
+      }
     }
 
-    if (!response.ok) {
-      const errText = await response.text();
-      if (RETRYABLE_STATUSES.has(response.status)) {
+    if (!response || !response.ok) {
+      const errText = response ? await response.text() : '(không có phản hồi)';
+      if (response && RETRYABLE_STATUSES.has(response.status)) {
         res.status(503).json({
           error: `Hệ thống AI (Gemini) đang quá tải, đã tự động thử lại ${attempts} lần nhưng vẫn chưa được. Đây là lỗi tạm thời từ phía Google (KHÔNG PHẢI lỗi trong giáo án hay tài khoản của bạn) — vui lòng đợi khoảng 30 giây đến 1 phút rồi bấm "Soạn KHBD" lại.`,
         });
       } else {
-        res.status(response.status).json({ error: `Lỗi từ Gemini API: ${errText}` });
+        res.status(response ? response.status : 500).json({ error: `Lỗi từ Gemini API: ${errText}` });
       }
       return;
     }
