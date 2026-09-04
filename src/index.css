@@ -689,6 +689,28 @@ textarea:focus-visible {
   font-weight: 700;
 }
 
+.khbd-table__so-th,
+.khbd-table__so-td {
+  background: var(--info-soft);
+}
+
+.khbd-table__kt-th,
+.khbd-table__kt-td {
+  background: var(--amber-soft);
+}
+
+.khbd-table__so-th {
+  color: var(--info);
+}
+
+.khbd-table__kt-th {
+  color: var(--amber-deep);
+}
+
+.khbd-merged {
+  margin: 0 0 18px;
+}
+
 .math--missing {
   color: var(--danger);
   font-style: italic;

@@ -75,3 +75,47 @@ export function parseContentLines(text: string): ContentLine[] {
 
   return result;
 }
+
+export interface MergedSection {
+  /** Nội dung GOC trước bảng (ví dụ phần a) Mục tiêu, b) Nội dung... nếu có) — giữ nguyên, không gộp. */
+  beforeTable: ContentLine[];
+  /** Tiêu đề + dữ liệu của bảng gốc (chưa gồm cột Năng lực số/Hòa nhập mới). */
+  headers: string[];
+  rows: string[][];
+  /** Nội dung Năng lực số — hiện dạng một ô gộp dọc (rowSpan) suốt chiều cao bảng, vì đây là một đoạn văn cho cả mục chứ không tách theo từng dòng của bảng gốc. */
+  soText: string | null;
+  ktText: string | null;
+}
+
+/**
+ * Khi ngữ liệu gốc của một mục vốn đã là BẢNG THẬT (ví dụ "HOẠT ĐỘNG CỦA GV VÀ
+ * HS | SẢN PHẨM DỰ KIẾN | NLS"), giáo viên muốn cột Năng lực số/Hòa nhập được
+ * GẮN THÊM VÀO CHÍNH BẢNG ĐÓ (thêm cột), giống cách file gốc đã làm với cột
+ * NLS — chứ không tách thành khối riêng nằm cạnh bảng. Hàm này phát hiện
+ * trường hợp đó (khối GOC kết thúc bằng một bảng) và trả về cấu trúc đã gộp
+ * sẵn để bên hiển thị/xuất Word chỉ việc build ra bảng nhiều cột hơn.
+ * Trả về null nếu GOC không kết thúc bằng bảng, hoặc không có SO/KT nào cần gắn
+ * — khi đó nơi gọi nên dùng cách hiển thị 3 cột cạnh nhau như cũ (an toàn hơn
+ * cho nội dung dạng văn xuôi, không có gì để gộp).
+ */
+export function trySectionMerge(goc: string, so: string, kt: string): MergedSection | null {
+  const hasSo = so.trim().length > 0;
+  const hasKt = kt.trim().length > 0;
+  if (!hasSo && !hasKt) return null;
+
+  const gocLines = parseContentLines(goc);
+  if (gocLines.length === 0) return null;
+  const last = gocLines[gocLines.length - 1];
+  if (last.type !== 'table') return null;
+
+  const [headers, ...rows] = last.rows;
+  if (!headers || rows.length === 0) return null;
+
+  return {
+    beforeTable: gocLines.slice(0, -1),
+    headers,
+    rows,
+    soText: hasSo ? so.trim() : null,
+    ktText: hasKt ? kt.trim() : null,
+  };
+}

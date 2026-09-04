@@ -15,7 +15,7 @@ import {
 } from 'docx';
 import { saveAs } from 'file-saver';
 import { parseKhbd } from './khbdParser';
-import { parseContentLines } from './markdownTable';
+import { parseContentLines, trySectionMerge } from './markdownTable';
 import { mathNodeToDocxComponents } from './mathToDocx';
 import { parseLatexSafe } from './latexToMathNode';
 import type { EquationEntry } from '../types';
@@ -107,8 +107,10 @@ function inlineToRuns(line: string, equations: Record<string, EquationEntry>): P
   return runs;
 }
 
-function textBlockToParagraphs(text: string, equations: Record<string, EquationEntry>): (Paragraph | Table)[] {
-  const items = parseContentLines(text);
+function contentLinesToParagraphs(
+  items: ReturnType<typeof parseContentLines>,
+  equations: Record<string, EquationEntry>
+): (Paragraph | Table)[] {
   if (items.length === 0) return [new Paragraph({})];
 
   const out: (Paragraph | Table)[] = [];
@@ -145,6 +147,104 @@ function textBlockToParagraphs(text: string, equations: Record<string, EquationE
     out.push(new Paragraph({ children: inlineToRuns(item.text, equations) }));
   }
   return out;
+}
+
+function textBlockToParagraphs(text: string, equations: Record<string, EquationEntry>): (Paragraph | Table)[] {
+  return contentLinesToParagraphs(parseContentLines(text), equations);
+}
+
+/**
+ * Bảng đã GỘP thêm cột Năng lực số/Hòa nhập trực tiếp vào bảng gốc (thay vì để
+ * cạnh thành cột riêng) — dùng khi khối GOC của mục đó vốn đã là một bảng thật
+ * (ví dụ "HOẠT ĐỘNG CỦA GV VÀ HS | SẢN PHẨM DỰ KIẾN | NLS"). Nội dung SO/KT
+ * dùng `rowSpan` để hiện thành MỘT Ô gộp dọc suốt chiều cao bảng (vì đó là một
+ * đoạn văn chung cho cả mục, không tách theo từng dòng bảng gốc).
+ */
+function buildMergedTable(
+  merged: NonNullable<ReturnType<typeof trySectionMerge>>,
+  equations: Record<string, EquationEntry>
+): Table {
+  const { headers, rows, soText, ktText } = merged;
+  const extraCols = (soText !== null ? 1 : 0) + (ktText !== null ? 1 : 0);
+  const totalCols = headers.length + extraCols;
+  const colWidth = Math.floor(100 / totalCols);
+
+  const headerRow = new TableRow({
+    children: [
+      ...headers.map(
+        (h) =>
+          new TableCell({
+            width: { size: colWidth, type: WidthType.PERCENTAGE },
+            shading: { type: ShadingType.CLEAR, fill: 'E9ECF7' },
+            children: [new Paragraph({ children: inlineToRuns(h, equations) })],
+            margins: { top: 80, bottom: 80, left: 100, right: 100 },
+          })
+      ),
+      ...(soText !== null
+        ? [
+            new TableCell({
+              width: { size: colWidth, type: WidthType.PERCENTAGE },
+              shading: { type: ShadingType.CLEAR, fill: 'DCE6F7' },
+              children: [new Paragraph({ children: [new TextRun({ text: 'Năng lực số', bold: true, color: '2F6FA8' })] })],
+              margins: { top: 80, bottom: 80, left: 100, right: 100 },
+            }),
+          ]
+        : []),
+      ...(ktText !== null
+        ? [
+            new TableCell({
+              width: { size: colWidth, type: WidthType.PERCENTAGE },
+              shading: { type: ShadingType.CLEAR, fill: 'F2E2C8' },
+              children: [new Paragraph({ children: [new TextRun({ text: 'Giáo dục hòa nhập (HSKT)', bold: true, color: 'B8681A' })] })],
+              margins: { top: 80, bottom: 80, left: 100, right: 100 },
+            }),
+          ]
+        : []),
+    ],
+  });
+
+  const dataRows = rows.map(
+    (row, ri) =>
+      new TableRow({
+        children: [
+          ...row.map(
+            (cell) =>
+              new TableCell({
+                width: { size: colWidth, type: WidthType.PERCENTAGE },
+                children: [new Paragraph({ children: inlineToRuns(cell, equations) })],
+                margins: { top: 80, bottom: 80, left: 100, right: 100 },
+              })
+          ),
+          // Cột SO/KT chỉ khai báo Ở DÒNG ĐẦU TIÊN với rowSpan — thư viện `docx`
+          // tự hiểu các dòng sau KHÔNG có ô ở vị trí đó (giống demo chính thức
+          // của thư viện), không cần khai báo ô rỗng "tiếp nối" cho từng dòng.
+          ...(soText !== null && ri === 0
+            ? [
+                new TableCell({
+                  width: { size: colWidth, type: WidthType.PERCENTAGE },
+                  shading: { type: ShadingType.CLEAR, fill: 'DCE6F7' },
+                  rowSpan: rows.length,
+                  children: contentLinesToParagraphs(parseContentLines(soText), equations),
+                  margins: { top: 80, bottom: 80, left: 100, right: 100 },
+                }),
+              ]
+            : []),
+          ...(ktText !== null && ri === 0
+            ? [
+                new TableCell({
+                  width: { size: colWidth, type: WidthType.PERCENTAGE },
+                  shading: { type: ShadingType.CLEAR, fill: 'F2E2C8' },
+                  rowSpan: rows.length,
+                  children: contentLinesToParagraphs(parseContentLines(ktText), equations),
+                  margins: { top: 80, bottom: 80, left: 100, right: 100 },
+                }),
+              ]
+            : []),
+        ],
+      })
+  );
+
+  return new Table({ width: { size: 100, type: WidthType.PERCENTAGE }, rows: [headerRow, ...dataRows] });
 }
 
 /**
@@ -217,6 +317,15 @@ export async function exportLessonPlanToDocx(
     // block.type === 'section' -> bảng nhiều cột thật: GOC luôn có, SO/KT tuỳ mục có hay không
     const hasSo = block.so.trim().length > 0;
     const hasKt = block.kt.trim().length > 0;
+
+    const merged = trySectionMerge(block.goc, block.so, block.kt);
+    if (merged) {
+      if (merged.beforeTable.length > 0) {
+        children.push(...contentLinesToParagraphs(merged.beforeTable, equations));
+      }
+      children.push(buildMergedTable(merged, equations), new Paragraph({}));
+      continue;
+    }
 
     const gocCell = new TableCell({
       width: { size: hasSo && hasKt ? 50 : hasSo || hasKt ? 62 : 100, type: WidthType.PERCENTAGE },

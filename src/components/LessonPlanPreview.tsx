@@ -2,7 +2,7 @@ import { Fragment } from 'react';
 import EquationView from './EquationView';
 import MathRenderer from './MathRenderer';
 import { parseKhbd } from '../utils/khbdParser';
-import { parseContentLines } from '../utils/markdownTable';
+import { parseContentLines, trySectionMerge, type ContentLine } from '../utils/markdownTable';
 import { parseLatexSafe } from '../utils/latexToMathNode';
 import { mathNodeToMathml } from '../utils/mathToMathml';
 import type { EquationEntry } from '../types';
@@ -32,8 +32,7 @@ function renderInline(text: string, key: string, equations: Record<string, Equat
   });
 }
 
-function renderMultiline(text: string, keyPrefix: string, equations: Record<string, EquationEntry>) {
-  const items = parseContentLines(text);
+function renderContentLines(items: ContentLine[], keyPrefix: string, equations: Record<string, EquationEntry>) {
   return items.map((item, idx) => {
     const key = `${keyPrefix}-${idx}`;
     if (item.type === 'bullet') {
@@ -66,6 +65,56 @@ function renderMultiline(text: string, keyPrefix: string, equations: Record<stri
   });
 }
 
+function renderMultiline(text: string, keyPrefix: string, equations: Record<string, EquationEntry>) {
+  return renderContentLines(parseContentLines(text), keyPrefix, equations);
+}
+
+/**
+ * Bảng đã GỘP thêm cột Năng lực số/Hòa nhập trực tiếp vào bảng gốc (thay vì để
+ * cạnh thành cột riêng) — dùng khi khối GOC của mục đó vốn đã là một bảng thật.
+ * Nội dung SO/KT hiện dạng MỘT Ô gộp dọc (rowSpan) suốt chiều cao bảng, vì đó
+ * là một đoạn văn chung cho cả mục chứ không tách theo từng dòng bảng gốc.
+ */
+function renderMergedTable(
+  merged: NonNullable<ReturnType<typeof trySectionMerge>>,
+  keyPrefix: string,
+  equations: Record<string, EquationEntry>
+) {
+  const { headers, rows, soText, ktText } = merged;
+  return (
+    <table className="khbd-table khbd-table--merged" key={`${keyPrefix}-merged`}>
+      <thead>
+        <tr>
+          {headers.map((h, ci) => (
+            <th key={`${keyPrefix}-h${ci}`}>{renderInline(h, `${keyPrefix}-h${ci}`, equations)}</th>
+          ))}
+          {soText !== null && <th className="khbd-table__so-th">Năng lực số</th>}
+          {ktText !== null && <th className="khbd-table__kt-th">Giáo dục hòa nhập (HSKT)</th>}
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row, ri) => (
+          <tr key={`${keyPrefix}-r${ri}`}>
+            {row.map((cell, ci) => (
+              <td key={`${keyPrefix}-r${ri}c${ci}`}>{renderInline(cell, `${keyPrefix}-r${ri}c${ci}`, equations)}</td>
+            ))}
+            {soText !== null && ri === 0 && (
+              <td className="khbd-table__so-td" rowSpan={rows.length}>
+                {renderMultiline(soText, `${keyPrefix}-so`, equations)}
+              </td>
+            )}
+            {ktText !== null && ri === 0 && (
+              <td className="khbd-table__kt-td" rowSpan={rows.length}>
+                {renderMultiline(ktText, `${keyPrefix}-kt`, equations)}
+              </td>
+            )}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 export default function LessonPlanPreview({ markdown, equations, weekNumber, durationPeriods }: Props) {
   const blocks = parseKhbd(markdown);
   const firstHeadingIdx = blocks.findIndex((b) => b.type === 'heading');
@@ -94,6 +143,17 @@ export default function LessonPlanPreview({ markdown, equations, weekNumber, dur
 
         const hasSo = block.so.trim().length > 0;
         const hasKt = block.kt.trim().length > 0;
+        const merged = trySectionMerge(block.goc, block.so, block.kt);
+
+        if (merged) {
+          return (
+            <div className="khbd-merged" key={idx}>
+              {merged.beforeTable.length > 0 && renderContentLines(merged.beforeTable, `${idx}-before`, equations)}
+              {renderMergedTable(merged, `${idx}`, equations)}
+            </div>
+          );
+        }
+
         const colCount = 1 + (hasSo ? 1 : 0) + (hasKt ? 1 : 0);
 
         return (
