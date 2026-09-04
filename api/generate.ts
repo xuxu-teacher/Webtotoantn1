@@ -159,29 +159,52 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   const body = req.body as LessonPlanRequestBody;
 
-  try {
-    const response = await fetch(GEMINI_API_URL, {
+  // Ngân sách token lớn vì khối GOC phải chép nguyên văn toàn bộ giáo án gốc +
+  // thêm cột SO/KT -> output dài hơn nhiều so với việc chỉ tóm tắt/viết lại,
+  // cần đủ chỗ để không bị cắt giữa chừng (MAX_TOKENS).
+  function buildRequestBody(includeThinkingConfig: boolean) {
+    const generationConfig: Record<string, unknown> = { maxOutputTokens: 32768 };
+    if (includeThinkingConfig) {
+      // Việc này chủ yếu là tuân thủ định dạng + chép lại đúng, không cần suy
+      // luận sâu -> tắt "thinking" để dành trọn ngân sách token cho nội dung
+      // thật. KHÔNG PHẢI model nào cũng nhận tham số này (vd một số bản "lite"
+      // chỉ nhận thinkingLevel, không nhận thinkingBudget) -> nếu Gemini báo
+      // lỗi 400 vì tham số này, code bên dưới tự thử lại mà không có nó.
+      generationConfig.thinkingConfig = { thinkingBudget: 0 };
+    }
+    return JSON.stringify({
+      system_instruction: { parts: [{ text: buildSystemPrompt() }] },
+      contents: [{ role: 'user', parts: [{ text: buildUserPrompt(body) }] }],
+      generationConfig,
+    });
+  }
+
+  async function callGemini(includeThinkingConfig: boolean) {
+    return fetch(GEMINI_API_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         // Header (thay vì query param ?key=...) để key không bị lộ trong access log.
         'x-goog-api-key': apiKey,
       },
-      body: JSON.stringify({
-        system_instruction: { parts: [{ text: buildSystemPrompt() }] },
-        contents: [{ role: 'user', parts: [{ text: buildUserPrompt(body) }] }],
-        generationConfig: {
-          // Cột GOC phải chép nguyên văn toàn bộ giáo án gốc + thêm cột SO/KT
-          // -> output có thể dài hơn nhiều so với việc chỉ tóm tắt/viết lại,
-          // nên cần ngân sách token lớn để không bị cắt giữa chừng (MAX_TOKENS).
-          maxOutputTokens: 32768,
-          // Việc này chủ yếu là tuân thủ định dạng + chép lại đúng, không cần
-          // suy luận sâu -> tắt "thinking" để dành trọn ngân sách token cho nội
-          // dung thật, tránh vừa tốn token vừa có nguy cơ rò rỉ suy nghĩ ra bài.
-          thinkingConfig: { thinkingBudget: 0 },
-        },
-      }),
+      body: buildRequestBody(includeThinkingConfig),
     });
+  }
+
+  try {
+    let response = await callGemini(true);
+
+    if (!response.ok && response.status === 400) {
+      const firstErrText = await response.text();
+      if (firstErrText.includes('INVALID_ARGUMENT')) {
+        // Model hiện tại (vd một số bản "lite") có thể không nhận thinkingConfig
+        // theo dạng này -> thử lại một lần, bỏ hẳn tham số đó.
+        response = await callGemini(false);
+      } else {
+        res.status(400).json({ error: `Lỗi từ Gemini API: ${firstErrText}` });
+        return;
+      }
+    }
 
     if (!response.ok) {
       const errText = await response.text();
