@@ -39,6 +39,7 @@ interface LessonPlanRequestBody {
   equationLegend?: string;
   accommodation: { types: string[]; notes: string };
   extraRequirements?: string;
+  partInfo?: { index: number; total: number };
 }
 
 const DISABILITY_LABELS: Record<string, string> = {
@@ -146,12 +147,21 @@ function buildUserPrompt(body: LessonPlanRequestBody): string {
     ? 'Lớp NÀY CÓ HSKT — theo quy tắc 5, bạn PHẢI viết khối <<<KT>>> cho hầu hết các mục (chỉ bỏ khi ngữ liệu gốc của đúng mục đó đã có sẵn phần riêng đầy đủ, xem quy tắc 5).'
     : 'Lớp này KHÔNG có HSKT — TUYỆT ĐỐI không viết khối <<<KT>>> ở bất kỳ mục nào.';
 
+  const partNote = body.partInfo
+    ? `\nLƯU Ý QUAN TRỌNG: Đây CHỈ LÀ PHẦN ${body.partInfo.index}/${body.partInfo.total} của một giáo án DÀI HƠN
+đã được chia nhỏ để xử lý (các phần khác được gửi ở những lượt gọi riêng biệt, rồi ghép lại
+sau). TUYỆT ĐỐI KHÔNG tự thêm phần mở đầu (vd nhắc lại tên bài, mục tiêu chung) hay phần kết
+luận/tổng kết cho CẢ bài — chỉ xử lý ĐÚNG nội dung của phần ${body.partInfo.index} này (chép
+nguyên văn ở khối GOC + thêm cột SO/KT), y như thể đây là một đoạn trích ở giữa một tài liệu
+dài hơn.\n`
+    : '';
+
   return `THÔNG TIN BÀI DẠY
 - Môn học: ${body.subject}
 - Khối lớp: ${body.grade}
 - Tên bài: ${body.lessonTitle}
 - Số tiết: ${body.durationPeriods}
-
+${partNote}
 LOẠI KHUYẾT TẬT CỦA HSKT TRONG LỚP (nếu có):
 ${disabilityLines}
 Ghi chú thêm của GV về HSKT: ${body.accommodation?.notes || '(không có)'}

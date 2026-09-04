@@ -4,7 +4,7 @@ import DisabilityAccommodationForm from './components/DisabilityAccommodationFor
 import LessonPlanForm from './components/LessonPlanForm';
 import LessonPlanPreview from './components/LessonPlanPreview';
 import SchoolLogo from './components/SchoolLogo';
-import { generateLessonPlan } from './utils/aiClient';
+import { generateLessonPlanSmart } from './utils/aiClient';
 import { exportLessonPlanToDocx } from './utils/exportDocx';
 import { buildAiSourceText } from './utils/aiSourceBuilder';
 import { convertEquationsBatch } from './utils/mathTypeConverterClient';
@@ -24,6 +24,7 @@ export default function App() {
 
   const [generating, setGenerating] = useState(false);
   const [generatingSeconds, setGeneratingSeconds] = useState(0);
+  const [genPartProgress, setGenPartProgress] = useState<{ current: number; total: number } | null>(null);
   const [result, setResult] = useState<{ markdown: string; warnings: string[] } | null>(null);
   const [genError, setGenError] = useState<string | null>(null);
   const [apiKeyConfigured, setApiKeyConfigured] = useState<boolean | null>(null);
@@ -87,26 +88,31 @@ export default function App() {
     }
     setGenError(null);
     setGenerating(true);
+    setGenPartProgress(null);
     setResult(null);
     try {
       const { bodyText, equationLegend } = parsedDoc
         ? buildAiSourceText(parsedDoc)
         : { bodyText: '', equationLegend: '' };
-      const res = await generateLessonPlan({
-        subject: SUBJECT,
-        grade,
-        lessonTitle,
-        durationPeriods,
-        sourceContent: bodyText,
-        equationLegend,
-        accommodation,
-        extraRequirements,
-      });
+      const res = await generateLessonPlanSmart(
+        {
+          subject: SUBJECT,
+          grade,
+          lessonTitle,
+          durationPeriods,
+          sourceContent: bodyText,
+          equationLegend,
+          accommodation,
+          extraRequirements,
+        },
+        (current, total) => setGenPartProgress({ current, total })
+      );
       setResult(res);
     } catch (err: any) {
       setGenError(err.message || String(err));
     } finally {
       setGenerating(false);
+      setGenPartProgress(null);
     }
   }
 
@@ -245,12 +251,14 @@ export default function App() {
               <span className="spinner" aria-hidden="true" />
               <div>
                 <p className="generating-status__text">
-                  AI đang soạn kế hoạch bài dạy… ({generatingSeconds}s)
+                  {genPartProgress
+                    ? `AI đang soạn phần ${genPartProgress.current}/${genPartProgress.total}… (${generatingSeconds}s)`
+                    : `AI đang soạn kế hoạch bài dạy… (${generatingSeconds}s)`}
                 </p>
                 <p className="generating-status__hint">
-                  Giáo án càng dài (chép nguyên văn + thêm cột năng lực số/hòa nhập cho từng
-                  mục) thì càng mất nhiều thời gian — thường 30–90 giây, đôi khi hơn với bài
-                  rất dài. Đừng tắt trang trong lúc chờ.
+                  {genPartProgress
+                    ? 'Giáo án này khá dài nên hệ thống tự chia nhỏ thành nhiều phần và soạn lần lượt từng phần để tránh bị quá thời gian xử lý — xong hết các phần sẽ tự ghép lại thành một bài hoàn chỉnh. Đừng tắt trang trong lúc chờ.'
+                    : 'Giáo án càng dài (chép nguyên văn + thêm cột năng lực số/hòa nhập cho từng mục) thì càng mất nhiều thời gian — thường 30–90 giây, đôi khi hơn với bài rất dài. Đừng tắt trang trong lúc chờ.'}
                 </p>
               </div>
             </div>

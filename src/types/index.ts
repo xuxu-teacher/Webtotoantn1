@@ -97,6 +97,11 @@ export interface LessonPlanRequest {
   equationLegend?: string; // chú thích nội dung công thức, gửi TÁCH RIÊNG khỏi sourceContent
   accommodation: DisabilityAccommodation;
   extraRequirements?: string;
+  /** Có khi giáo án gốc quá dài, hệ thống tự chia `sourceContent` thành nhiều phần rồi gọi
+   * API riêng cho từng phần (xem aiClient.ts: generateLessonPlanSmart) — trường này báo cho
+   * AI biết đang xử lý phần thứ mấy trong tổng số, để KHÔNG tự thêm phần mở đầu/kết luận cho
+   * toàn bài hay lặp lại tiêu đề ở mỗi phần. */
+  partInfo?: { index: number; total: number };
 }
 
 export interface GeneratedLessonPlan {
