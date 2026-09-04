@@ -1,6 +1,7 @@
 import EquationView from './EquationView';
 import MathRenderer from './MathRenderer';
 import { parseKhbd } from '../utils/khbdParser';
+import { parseContentLines } from '../utils/markdownTable';
 import { parseLatexSafe } from '../utils/latexToMathNode';
 import { mathNodeToMathml } from '../utils/mathToMathml';
 import type { EquationEntry } from '../types';
@@ -29,14 +30,36 @@ function renderInline(text: string, key: string, equations: Record<string, Equat
 }
 
 function renderMultiline(text: string, keyPrefix: string, equations: Record<string, EquationEntry>) {
-  const lines = text.split('\n').filter((l) => l.trim());
-  return lines.map((line, idx) => {
-    const trimmed = line.trim();
+  const items = parseContentLines(text);
+  return items.map((item, idx) => {
     const key = `${keyPrefix}-${idx}`;
-    if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
-      return <li key={key}>{renderInline(trimmed.slice(2), key, equations)}</li>;
+    if (item.type === 'bullet') {
+      return <li key={key}>{renderInline(item.text, key, equations)}</li>;
     }
-    return <p key={key}>{renderInline(trimmed, key, equations)}</p>;
+    if (item.type === 'table') {
+      const [header, ...body] = item.rows;
+      return (
+        <table className="khbd-table" key={key}>
+          <thead>
+            <tr>
+              {header.map((cell, ci) => (
+                <th key={`${key}-h${ci}`}>{renderInline(cell, `${key}-h${ci}`, equations)}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {body.map((row, ri) => (
+              <tr key={`${key}-r${ri}`}>
+                {row.map((cell, ci) => (
+                  <td key={`${key}-r${ri}c${ci}`}>{renderInline(cell, `${key}-r${ri}c${ci}`, equations)}</td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      );
+    }
+    return <p key={key}>{renderInline(item.text, key, equations)}</p>;
   });
 }
 

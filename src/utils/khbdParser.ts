@@ -1,3 +1,5 @@
+import { wrapBareLatex } from './latexToMathNode';
+
 export type KhbdBlock =
   | { type: 'heading'; level: 1 | 2 | 3; text: string }
   | { type: 'section'; goc: string; so: string; kt: string }
@@ -57,9 +59,9 @@ export function parseKhbd(markdown: string): KhbdBlock[] {
           break;
         }
       }
-      blocks.push({ type: 'section', goc, so, kt });
+      blocks.push({ type: 'section', goc: wrapBareLatex(goc), so: wrapBareLatex(so), kt: wrapBareLatex(kt) });
     } else if (trimmed) {
-      blocks.push({ type: 'text', text: trimmed });
+      blocks.push({ type: 'text', text: wrapBareLatex(trimmed) });
       i++;
     } else {
       i++;

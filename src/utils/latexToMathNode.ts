@@ -199,3 +199,41 @@ export function parseLatexSafe(latex: string): MathNode {
     return { kind: 'text', value: latex.replace(/\\[a-zA-Z]+/g, '').replace(/[{}]/g, '') };
   }
 }
+
+/**
+ * LƯỚI AN TOÀN: đôi khi AI không tuân thủ đúng hướng dẫn (bọc công thức mới
+ * trong $...$), hoặc — trường hợp hay gặp hơn — lỡ chép nguyên văn phần "chú
+ * thích nội dung công thức" (vốn có dạng LaTeX như "y=f\left(x\right)=...")
+ * ra làm nội dung thay vì giữ placeholder [[EQ:CTx]] trần. Nếu để nguyên, các
+ * đoạn LaTeX trần này hiện ra như chữ thường, lộ hết dấu \, {, } (đúng lỗi
+ * "\left(...)" người dùng gặp phải).
+ *
+ * Hàm này quét toàn bộ khối văn bản, tìm các "cụm dính liền không có khoảng
+ * trắng" (giống hệt cách LaTeX thường được viết: không chèn dấu cách quanh
+ * *, ^, _, \) mà chứa dấu hiệu LaTeX rõ ràng (dấu \ hoặc chữ/số/dấu ngoặc
+ * đóng theo ngay sau bởi ^ hoặc _), rồi tự bọc chúng trong $...$ để pipeline
+ * hiển thị/xuất Word xử lý như công thức thật thay vì bỏ mặc thành chữ.
+ * Không đụng vào những gì đã nằm trong $...$, [[EQ:CTx]], hay dòng bảng
+ * Markdown (| ... |).
+ */
+export function wrapBareLatex(text: string): string {
+  const protectedSpans: string[] = [];
+  let working = text.replace(/(\[\[EQ:[^\]]+\]\]|\$[^$]+\$)/g, (m) => {
+    protectedSpans.push(m);
+    return `\u0000${protectedSpans.length - 1}\u0000`;
+  });
+
+  working = working.replace(/\S+/g, (word) => {
+    if (word.includes('\u0000')) return word; // đã được bảo vệ ở trên, bỏ qua
+    const trailingPunct = word.match(/[.,;:!?]+$/)?.[0] || '';
+    const core = trailingPunct ? word.slice(0, -trailingPunct.length) : word;
+    if (!core) return word;
+
+    const looksLikeLatex = core.includes('\\') || /[A-Za-z0-9)\]]\^/.test(core) || /[A-Za-z0-9)\]]_/.test(core);
+    if (!looksLikeLatex) return word;
+
+    return `$${core}$${trailingPunct}`;
+  });
+
+  return working.replace(/\u0000(\d+)\u0000/g, (_, i) => protectedSpans[Number(i)]);
+}

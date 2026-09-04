@@ -78,7 +78,8 @@ export interface LessonPlanRequest {
   grade: string;
   lessonTitle: string;
   durationPeriods: number;
-  sourceContent: string; // ngữ liệu gửi AI (placeholder [[EQ:CTx]] kèm gợi ý nội dung công thức)
+  sourceContent: string; // ngữ liệu gửi AI — CHỈ chứa placeholder trần [[EQ:CTx]], không chèn chú thích
+  equationLegend?: string; // chú thích nội dung công thức, gửi TÁCH RIÊNG khỏi sourceContent
   accommodation: DisabilityAccommodation;
   extraRequirements?: string;
 }

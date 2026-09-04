@@ -625,6 +625,28 @@ textarea:focus-visible {
   font-size: 0.93rem;
 }
 
+.khbd-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 8px 0 14px;
+  font-size: 0.9rem;
+  display: block;
+  overflow-x: auto;
+}
+
+.khbd-table th,
+.khbd-table td {
+  border: 1px solid var(--rule);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.khbd-table th {
+  background: rgba(32, 45, 94, 0.05);
+  font-weight: 700;
+}
+
 .math--missing {
   color: var(--danger);
   font-style: italic;

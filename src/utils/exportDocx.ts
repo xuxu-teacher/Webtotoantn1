@@ -15,6 +15,7 @@ import {
 } from 'docx';
 import { saveAs } from 'file-saver';
 import { parseKhbd } from './khbdParser';
+import { parseContentLines } from './markdownTable';
 import { mathNodeToDocxComponents } from './mathToDocx';
 import { parseLatexSafe } from './latexToMathNode';
 import type { EquationEntry } from '../types';
@@ -72,7 +73,11 @@ function inlineToRuns(line: string, equations: Record<string, EquationEntry>): P
         continue;
       }
       if (entry?.latexFromExternalConverter) {
-        runs.push(new TextRun({ text: entry.latexFromExternalConverter, italics: true, font: 'Cambria Math' }));
+        // Trước đây in thẳng chuỗi LaTeX ra làm chữ nghiêng (hiện đúng lỗi
+        // "\left(...)" trong file Word) — giờ dựng lại thành object công thức
+        // Word thật, giống hệt cách công thức gốc (m:oMath) được xử lý, và
+        // giống công thức MỚI do AI viết thêm ở nhánh $...$ bên dưới.
+        runs.push(new DocxMath({ children: mathNodeToDocxComponents(parseLatexSafe(entry.latexFromExternalConverter)) }));
         continue;
       }
       const imgRun = entry ? equationImageRun(entry) : null;
@@ -102,19 +107,44 @@ function inlineToRuns(line: string, equations: Record<string, EquationEntry>): P
   return runs;
 }
 
-function textBlockToParagraphs(text: string, equations: Record<string, EquationEntry>): Paragraph[] {
-  const lines = text.split('\n').filter((l) => l.trim());
-  if (lines.length === 0) return [new Paragraph({})];
+function textBlockToParagraphs(text: string, equations: Record<string, EquationEntry>): (Paragraph | Table)[] {
+  const items = parseContentLines(text);
+  if (items.length === 0) return [new Paragraph({})];
 
-  return lines.map((line) => {
-    const trimmed = line.trim();
-    const isBullet = trimmed.startsWith('- ') || trimmed.startsWith('* ');
-    const content = isBullet ? trimmed.slice(2) : trimmed;
-    return new Paragraph({
-      bullet: isBullet ? { level: 0 } : undefined,
-      children: inlineToRuns(content, equations),
-    });
-  });
+  const out: (Paragraph | Table)[] = [];
+  for (const item of items) {
+    if (item.type === 'table') {
+      const [header, ...body] = item.rows;
+      const colCount = header.length;
+      const colWidth = Math.floor(100 / colCount);
+      const buildRow = (cells: string[], isHeader: boolean) =>
+        new TableRow({
+          children: cells.map(
+            (cell) =>
+              new TableCell({
+                width: { size: colWidth, type: WidthType.PERCENTAGE },
+                shading: isHeader ? { type: ShadingType.CLEAR, fill: 'E9ECF7' } : undefined,
+                children: [new Paragraph({ children: inlineToRuns(cell, equations) })],
+                margins: { top: 80, bottom: 80, left: 100, right: 100 },
+              })
+          ),
+        });
+      out.push(
+        new Table({
+          width: { size: 100, type: WidthType.PERCENTAGE },
+          rows: [buildRow(header, true), ...body.map((r) => buildRow(r, false))],
+        }),
+        new Paragraph({})
+      );
+      continue;
+    }
+    if (item.type === 'bullet') {
+      out.push(new Paragraph({ bullet: { level: 0 }, children: inlineToRuns(item.text, equations) }));
+      continue;
+    }
+    out.push(new Paragraph({ children: inlineToRuns(item.text, equations) }));
+  }
+  return out;
 }
 
 /**

@@ -111,6 +111,10 @@ function walk(node: XNode, ctx: WalkCtx): string {
   if (tag === 'w:tab') return '\t';
   if (tag === 'w:br' || tag === 'w:cr') return '\n';
 
+  if (tag === 'w:tbl') {
+    return renderTableAsMarkdown(node, ctx);
+  }
+
   const children = childrenOf(node);
 
   if (tag === 'w:p') {
@@ -127,6 +131,50 @@ function walk(node: XNode, ctx: WalkCtx): string {
   }
 
   return children.map((c) => walk(c, ctx)).join('');
+}
+
+/**
+ * Nhiều giáo án Việt Nam trình bày sẵn dạng BẢNG THẬT trong Word (ví dụ 3 cột
+ * "HOẠT ĐỘNG CỦA GV VÀ HS" | "SẢN PHẨM DỰ KIẾN" | "NLS"). Trước đây app chỉ đọc
+ * text tuần tự nên một bảng 3 cột bị "làm phẳng" thành các đoạn văn nối tiếp,
+ * MẤT HẲN ranh giới cột — đây là lý do "file gốc 3 cột mà lên web chỉ còn 1
+ * cột". Hàm này dựng lại bảng gốc thành cú pháp bảng Markdown (| ô 1 | ô 2 |),
+ * giữ đúng số cột/số dòng, để:
+ *   1) Gửi cho AI dưới dạng văn bản mà AI hiểu đúng đây là một bảng nhiều cột
+ *      và phải TÁI TẠO Y NGUYÊN (xem quy tắc trong api/generate.ts).
+ *   2) Được nhận diện lại ở markdownTable.ts và render/xuất thành bảng thật
+ *      (không phải đoạn văn) cả ở bản xem trước lẫn file Word xuất ra.
+ */
+function renderTableAsMarkdown(tblNode: XNode, ctx: WalkCtx): string {
+  const rows = childrenOf(tblNode).filter((c) => tagOf(c) === 'w:tr');
+  if (rows.length === 0) return '';
+
+  const rowCells: string[][] = rows.map((tr) => {
+    const cells = childrenOf(tr).filter((c) => tagOf(c) === 'w:tc');
+    return cells.map((tc) => {
+      const raw = childrenOf(tc)
+        .map((c) => walk(c, ctx))
+        .join('')
+        .replace(/\n+/g, ' ') // Markdown table: mỗi ô chỉ được nằm trên 1 dòng
+        .replace(/\|/g, '\\|') // tránh dấu | trong nội dung phá vỡ cú pháp bảng
+        .trim();
+      return raw;
+    });
+  });
+
+  const colCount = Math.max(...rowCells.map((r) => r.length), 1);
+  const pad = (r: string[]) => {
+    const padded = [...r];
+    while (padded.length < colCount) padded.push('');
+    return padded;
+  };
+
+  const lines = [
+    `| ${pad(rowCells[0]).join(' | ')} |`,
+    `| ${Array(colCount).fill('---').join(' | ')} |`,
+    ...rowCells.slice(1).map((r) => `| ${pad(r).join(' | ')} |`),
+  ];
+  return lines.join('\n') + '\n';
 }
 
 /** Đọc word/_rels/document.xml.rels -> map relationship Id -> đường dẫn file trong zip. */

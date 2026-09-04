@@ -75,13 +75,16 @@ export default function App() {
     setGenerating(true);
     setResult(null);
     try {
-      const sourceContent = parsedDoc ? buildAiSourceText(parsedDoc) : '';
+      const { bodyText, equationLegend } = parsedDoc
+        ? buildAiSourceText(parsedDoc)
+        : { bodyText: '', equationLegend: '' };
       const res = await generateLessonPlan({
         subject,
         grade,
         lessonTitle,
         durationPeriods,
-        sourceContent,
+        sourceContent: bodyText,
+        equationLegend,
         accommodation,
         extraRequirements,
       });
