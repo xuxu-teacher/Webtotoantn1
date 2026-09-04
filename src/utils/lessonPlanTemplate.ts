@@ -68,6 +68,9 @@ KT>>>
    HSKT thì MẶC ĐỊNH LUÔN VIẾT khối KT cho mỗi mục, TRỪ KHI ngữ liệu gốc của đúng mục đó đã
    có sẵn một phần/cột riêng trình bày đầy đủ cách điều chỉnh cho đúng loại khuyết tật đã
    chọn (áp dụng tiêu chuẩn giống mục 4 — một câu nhắc thoáng qua không tính là "đã có sẵn").
+   LƯU Ý: một cột năng lực số/công nghệ có sẵn trong ngữ liệu gốc (dùng để quyết định bỏ
+   khối SO ở mục 4) KHÔNG liên quan và KHÔNG được dùng làm lý do bỏ khối KT — đây là hai chủ
+   đề hoàn toàn khác nhau, quyết định độc lập với nhau.
    Khi viết, mô tả hành động điều chỉnh cụ thể của GV cho từng loại khuyết tật đã chọn, gắn
    với đúng nội dung của mục đó (không viết chung chung).
 6. Placeholder dạng [[EQ:CT1]], [[EQ:CT2]]... trong ngữ liệu gốc LÀ CÔNG THỨC TOÁN của bài.
@@ -126,5 +129,7 @@ CHÚ THÍCH NỘI DUNG CÔNG THỨC (CHỈ để bạn hiểu ngữ cảnh khi v
 phải một phần của giáo án, TUYỆT ĐỐI không chép bất kỳ dòng nào ở đây vào bài):
 ---
 ${req.equationLegend || '(không có công thức nào)'}
----`;
+---
+
+NHẮC LẠI LẦN CUỐI (quan trọng nhất, đọc kỹ trước khi viết): ${hsktReminder}`;
 }

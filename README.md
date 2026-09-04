@@ -49,6 +49,23 @@ một backend Express tương đương và trỏ proxy trong `vite.config.ts`.
    (lấy tại aistudio.google.com → Get API key). Không đưa key này vào code phía client.
 4. Deploy. Vercel tự nhận diện `api/generate.ts` là serverless function.
 
+## Vì sao soạn KHBD lâu, và cách rút ngắn thời gian chờ
+
+Vì kiến trúc mới bắt AI chép NGUYÊN VĂN toàn bộ giáo án gốc rồi mới thêm 2 cột năng lực
+số/hòa nhập, phản hồi thường dài hơn nhiều so với việc chỉ tóm tắt/viết lại — nên việc soạn
+có thể mất 30–90 giây, đôi khi hơn với giáo án rất dài. Vài điều cần biết:
+
+- File `vercel.json` đi kèm đã đặt `maxDuration: 60` cho `api/generate.ts` — QUAN TRỌNG vì
+  gói **Hobby (miễn phí)** của Vercel mặc định chỉ cho serverless function chạy **10 giây**
+  rồi tự ngắt; nếu thiếu file này (hoặc bạn xoá/sửa nhầm), giáo án dài sẽ bị lỗi giữa chừng
+  dù code không có gì sai. Nếu 60 giây vẫn chưa đủ với giáo án rất dài của bạn, cần nâng lên
+  gói **Pro** của Vercel (cho phép tới 300 giây/5 phút) và tăng `maxDuration` tương ứng.
+- Giao diện có đếm giây trong lúc chờ để bạn biết hệ thống vẫn đang chạy, không bị treo.
+- Muốn nhanh hơn (đánh đổi chất lượng thấp hơn một chút): đổi biến môi trường `GEMINI_MODEL`
+  sang `gemini-3.5-flash-lite` (mặc định tắt "thinking", tối ưu cho độ trễ thấp) thay vì
+  `gemini-3.5-flash`. Kiểm tra model mới nhất tại https://ai.google.dev/gemini-api/docs/models
+  trước khi đổi, vì tên/khả năng model có thể thay đổi theo thời gian.
+
 ## Kiểm tra cấu hình API key
 
 Truy cập `/api/health` sẽ trả về `{ "hasApiKey": true|false }`. App tự gọi endpoint

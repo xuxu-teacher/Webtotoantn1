@@ -36,6 +36,20 @@ const SYMBOL_MAP: Record<string, string> = {
   '\\%': '%', '\\ ': ' ', '\\,': ' ', '\\;': ' ', '\\!': '',
 };
 
+// \mathbb{X} (chữ đậm nét đôi, dùng cho tập số: R, N, Z, Q, C...) -> map thẳng
+// sang ký tự Unicode tương ứng khi có (đủ dùng cho hầu hết ký hiệu toán phổ
+// thông); chữ không có trong bảng thì giữ nguyên chữ gốc (mất nét đôi nhưng
+// không vỡ chữ như trước — trước đây "\mathbb{R}" hiện ra thành "mathbbR").
+const BLACKBOARD_MAP: Record<string, string> = {
+  R: 'ℝ', N: 'ℕ', Z: 'ℤ', Q: 'ℚ', C: 'ℂ', P: 'ℙ', H: 'ℍ',
+};
+
+// Các lệnh đổi kiểu chữ (font) khác — không có ánh xạ Unicode đáng tin cậy,
+// nhưng vẫn phải TIÊU THỤ đúng đối số {...} theo sau, nếu không đối số đó sẽ
+// bị tách thành atom riêng, dính liền vào ngay sau tên lệnh (vd "\mathcal{F}"
+// -> "mathcalF" thay vì ít nhất phải ra "F").
+const FONT_COMMANDS = new Set(['\\mathcal', '\\mathfrak', '\\mathscr', '\\boldsymbol', '\\vec', '\\hat', '\\dot', '\\tilde']);
+
 class Cursor {
   constructor(public s: string, public i = 0) {}
   peek(): string {
@@ -112,6 +126,14 @@ function parseCommandAsAtom(c: Cursor, cmd: string): MathNode {
   if (cmd === '\\}') return { kind: 'text', value: '}' };
   if (cmd === '\\text' || cmd === '\\mathrm' || cmd === '\\mathbf') {
     return readAtom(c);
+  }
+  if (cmd === '\\mathbb' || cmd === '\\Bbb') {
+    const arg = readAtom(c);
+    if (arg.kind === 'text' && BLACKBOARD_MAP[arg.value]) return { kind: 'text', value: BLACKBOARD_MAP[arg.value] };
+    return arg; // không có ánh xạ -> vẫn tiêu thụ đối số, giữ nguyên chữ gốc
+  }
+  if (FONT_COMMANDS.has(cmd)) {
+    return readAtom(c); // tiêu thụ đối số, không vỡ chữ dù mất kiểu font riêng
   }
   // Lệnh lạ không nhận diện được -> bỏ dấu \, giữ lại phần chữ (an toàn, dễ đọc
   // hơn là in nguyên "\lệnh" ra bài).

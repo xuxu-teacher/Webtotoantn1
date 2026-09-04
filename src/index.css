@@ -512,6 +512,32 @@ textarea:focus-visible {
   font-style: italic;
 }
 
+.generating-status {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  background: var(--info-soft);
+  border-radius: var(--radius-sm);
+  padding: 14px 16px;
+}
+
+.generating-status .spinner {
+  margin-top: 3px;
+}
+
+.generating-status__text {
+  margin: 0 0 4px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.generating-status__hint {
+  margin: 0;
+  font-size: 0.85rem;
+  color: var(--ink-soft);
+  line-height: 1.5;
+}
+
 .error-banner {
   color: var(--danger);
   background: var(--danger-soft);

@@ -23,6 +23,7 @@ export default function App() {
   const [headerNote, setHeaderNote] = useState('');
 
   const [generating, setGenerating] = useState(false);
+  const [generatingSeconds, setGeneratingSeconds] = useState(0);
   const [result, setResult] = useState<{ markdown: string; warnings: string[] } | null>(null);
   const [genError, setGenError] = useState<string | null>(null);
   const [apiKeyConfigured, setApiKeyConfigured] = useState<boolean | null>(null);
@@ -37,6 +38,18 @@ export default function App() {
       .then((d) => setApiKeyConfigured(Boolean(d.hasApiKey)))
       .catch(() => setApiKeyConfigured(null)); // không xác định được (ví dụ đang chạy vite thuần) -> không cảnh báo
   }, []);
+
+  // Đếm giây trong lúc AI đang soạn — giáo án dài (chép nguyên văn + 2 cột bổ
+  // sung) có thể mất 30-90 giây, đếm giây giúp GV biết hệ thống vẫn đang chạy
+  // chứ không phải bị treo, thay vì chỉ nhìn một dòng chữ tĩnh không đổi.
+  useEffect(() => {
+    if (!generating) {
+      setGeneratingSeconds(0);
+      return;
+    }
+    const timer = window.setInterval(() => setGeneratingSeconds((s) => s + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [generating]);
 
   async function handleParsed(doc: ParsedDocument) {
     setParsedDoc(doc);
@@ -227,7 +240,21 @@ export default function App() {
         <section className="page__col page__col--preview">
           <h2 className="section-title">4. Kết quả</h2>
           {!result && !generating && <p className="empty-state">Kết quả sẽ hiện ở đây sau khi soạn.</p>}
-          {generating && <p className="empty-state">AI đang soạn kế hoạch bài dạy…</p>}
+          {generating && (
+            <div className="generating-status">
+              <span className="spinner" aria-hidden="true" />
+              <div>
+                <p className="generating-status__text">
+                  AI đang soạn kế hoạch bài dạy… ({generatingSeconds}s)
+                </p>
+                <p className="generating-status__hint">
+                  Giáo án càng dài (chép nguyên văn + thêm cột năng lực số/hòa nhập cho từng
+                  mục) thì càng mất nhiều thời gian — thường 30–90 giây, đôi khi hơn với bài
+                  rất dài. Đừng tắt trang trong lúc chờ.
+                </p>
+              </div>
+            </div>
+          )}
           {result && (
             <>
               {result.warnings.length > 0 && (
