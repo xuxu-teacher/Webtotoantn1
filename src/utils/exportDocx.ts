@@ -164,7 +164,8 @@ export async function exportLessonPlanToDocx(
   markdown: string,
   equations: Record<string, EquationEntry>,
   fileName: string,
-  headerNote?: string
+  headerNote?: string,
+  weekNumber?: string
 ) {
   const blocks = parseKhbd(markdown);
   const children: (Paragraph | Table)[] = [];
@@ -176,10 +177,20 @@ export async function exportLessonPlanToDocx(
         new Paragraph({
           alignment: AlignmentType.CENTER,
           children: [new TextRun({ text: line.trim(), bold: idx === 0, size: idx === 0 ? 24 : 20 })],
-          spacing: { after: idx === headerLines.length - 1 ? 240 : 40 },
+          spacing: { after: idx === headerLines.length - 1 && !weekNumber?.trim() ? 240 : 40 },
         })
       );
     });
+  }
+
+  if (weekNumber?.trim()) {
+    children.push(
+      new Paragraph({
+        alignment: AlignmentType.CENTER,
+        children: [new TextRun({ text: `Tuần thực hiện: ${weekNumber.trim()}`, size: 20 })],
+        spacing: { after: 240 },
+      })
+    );
   }
 
 

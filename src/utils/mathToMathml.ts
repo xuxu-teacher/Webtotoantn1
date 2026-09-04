@@ -35,7 +35,7 @@ function toMml(node: MathNode): string {
     case 'sqrt':
       return node.degree ? `<mroot>${toMml(node.base)}${toMml(node.degree)}</mroot>` : `<msqrt>${toMml(node.base)}</msqrt>`;
     case 'delim':
-      return `<mrow><mo>${esc(node.open)}</mo>${toMml(node.base)}<mo>${esc(node.close)}</mo></mrow>`;
+      return `<mrow>${node.open ? `<mo>${esc(node.open)}</mo>` : ''}${toMml(node.base)}${node.close ? `<mo>${esc(node.close)}</mo>` : ''}</mrow>`;
     case 'nary': {
       const opMml = `<mo>${NARY_MML[node.op] || esc(node.op)}</mo>`;
       if (node.sub && node.sup) {

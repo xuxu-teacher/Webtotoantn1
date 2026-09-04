@@ -104,10 +104,13 @@ thích, không markdown code fence.`;
 
 function buildUserPrompt(body: LessonPlanRequestBody): string {
   const types = body.accommodation?.types || [];
-  const disabilityLines =
-    types.length > 0
-      ? types.map((t) => `- ${DISABILITY_LABELS[t] || t}`).join('\n')
-      : '- (Lớp không có học sinh khuyết tật)';
+  const hasHskt = types.length > 0;
+  const disabilityLines = hasHskt
+    ? types.map((t) => `- ${DISABILITY_LABELS[t] || t}`).join('\n')
+    : '- (Lớp không có học sinh khuyết tật)';
+  const hsktReminder = hasHskt
+    ? 'Lớp NÀY CÓ HSKT — theo quy tắc 5, bạn PHẢI viết khối <<<KT>>> cho hầu hết các mục (chỉ bỏ khi ngữ liệu gốc của đúng mục đó đã có sẵn phần riêng đầy đủ, xem quy tắc 5).'
+    : 'Lớp này KHÔNG có HSKT — TUYỆT ĐỐI không viết khối <<<KT>>> ở bất kỳ mục nào.';
 
   return `THÔNG TIN BÀI DẠY
 - Môn học: ${body.subject}
@@ -118,6 +121,7 @@ function buildUserPrompt(body: LessonPlanRequestBody): string {
 LOẠI KHUYẾT TẬT CỦA HSKT TRONG LỚP (nếu có):
 ${disabilityLines}
 Ghi chú thêm của GV về HSKT: ${body.accommodation?.notes || '(không có)'}
+${hsktReminder}
 
 YÊU CẦU THÊM CỦA GIÁO VIÊN:
 ${body.extraRequirements || '(không có)'}
@@ -203,6 +207,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     if (!markdown.includes('<<<GOC')) {
       warnings.push('AI có thể chưa tuân thủ đúng định dạng cột yêu cầu — kiểm tra lại bản xem trước trước khi dùng.');
+    }
+    if ((body.accommodation?.types || []).length > 0 && !markdown.includes('<<<KT')) {
+      warnings.push('Lớp có HSKT nhưng AI không tạo cột giáo dục hòa nhập ở mục nào — có thể cần soạn lại hoặc bổ sung thủ công.');
     }
 
     res.status(200).json({ markdown, warnings });

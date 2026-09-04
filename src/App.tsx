@@ -12,10 +12,11 @@ import type { DisabilityAccommodation, ParsedDocument } from './types';
 
 export default function App() {
   const [parsedDoc, setParsedDoc] = useState<ParsedDocument | null>(null);
-  const [subject, setSubject] = useState('');
+  const SUBJECT = 'Toán'; // App chỉ phục vụ Tổ Toán -> cố định, không cần ô nhập
   const [grade, setGrade] = useState('');
   const [lessonTitle, setLessonTitle] = useState('');
   const [titleTouched, setTitleTouched] = useState(false); // true khi GV đã tự gõ -> không auto-fill đè lên nữa
+  const [weekNumber, setWeekNumber] = useState('');
   const [durationPeriods, setDurationPeriods] = useState(1);
   const [extraRequirements, setExtraRequirements] = useState('');
   const [accommodation, setAccommodation] = useState<DisabilityAccommodation>({ types: [], notes: '' });
@@ -67,8 +68,8 @@ export default function App() {
   }
 
   async function handleGenerate() {
-    if (!lessonTitle.trim() || !subject.trim()) {
-      setGenError('Vui lòng nhập Môn học và Tên bài học trước khi soạn.');
+    if (!lessonTitle.trim()) {
+      setGenError('Vui lòng nhập Tên bài học trước khi soạn.');
       return;
     }
     setGenError(null);
@@ -79,7 +80,7 @@ export default function App() {
         ? buildAiSourceText(parsedDoc)
         : { bodyText: '', equationLegend: '' };
       const res = await generateLessonPlan({
-        subject,
+        subject: SUBJECT,
         grade,
         lessonTitle,
         durationPeriods,
@@ -149,18 +150,18 @@ export default function App() {
       </section>
 
       <LessonPlanForm
-        subject={subject}
         grade={grade}
         lessonTitle={lessonTitle}
+        weekNumber={weekNumber}
         durationPeriods={durationPeriods}
         extraRequirements={extraRequirements}
         onChange={(patch) => {
-          if (patch.subject !== undefined) setSubject(patch.subject);
           if (patch.grade !== undefined) setGrade(patch.grade);
           if (patch.lessonTitle !== undefined) {
             setLessonTitle(patch.lessonTitle);
             setTitleTouched(true);
           }
+          if (patch.weekNumber !== undefined) setWeekNumber(patch.weekNumber);
           if (patch.durationPeriods !== undefined) setDurationPeriods(patch.durationPeriods);
           if (patch.extraRequirements !== undefined) setExtraRequirements(patch.extraRequirements);
         }}
@@ -237,13 +238,14 @@ export default function App() {
                 </div>
               )}
               <div className="preview-panel">
-                {headerNote.trim() && (
+                {(headerNote.trim() || weekNumber.trim()) && (
                   <div className="letterhead-preview">
                     {headerNote.split('\n').filter(Boolean).map((line, i) => (
                       <p key={i} className={i === 0 ? 'letterhead-preview__main' : ''}>
                         {line}
                       </p>
                     ))}
+                    {weekNumber.trim() && <p>Tuần thực hiện: {weekNumber.trim()}</p>}
                   </div>
                 )}
                 <LessonPlanPreview markdown={result.markdown} equations={parsedDoc?.equations || {}} />
@@ -251,7 +253,13 @@ export default function App() {
               <button
                 className="btn btn--secondary"
                 onClick={() =>
-                  exportLessonPlanToDocx(result.markdown, parsedDoc?.equations || {}, `KHBD_${lessonTitle || 'bai-day'}`, headerNote)
+                  exportLessonPlanToDocx(
+                    result.markdown,
+                    parsedDoc?.equations || {},
+                    `KHBD_${lessonTitle || 'bai-day'}`,
+                    headerNote,
+                    weekNumber
+                  )
                 }
               >
                 Tải về file Word (.docx)

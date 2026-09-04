@@ -236,6 +236,15 @@ h3 {
   font-weight: 500;
 }
 
+.field__static {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-sm);
+  background: var(--paper);
+  padding: 10px 13px;
+  font-size: 0.98rem;
+  color: var(--ink-soft);
+}
+
 input[type='text'],
 input[type='number'],
 input:not([type]),
@@ -651,6 +660,28 @@ textarea:focus-visible {
   color: var(--danger);
   font-style: italic;
   font-size: 0.85em;
+}
+
+/* Đồng bộ cỡ chữ công thức MathJax với chữ thường xung quanh, tránh công thức
+   to/nhỏ lệch tông; cho phép công thức lớn (hệ phương trình, ma trận) tự cuộn
+   ngang thay vì đẩy vỡ layout hai cột. */
+mjx-container {
+  font-size: 104% !important;
+  vertical-align: -0.1em;
+}
+
+mjx-container[display='true'] {
+  margin: 6px 0 !important;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.khbd-col mjx-container,
+.lesson-preview mjx-container {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
 }
 
 .math-preview-img {

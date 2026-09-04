@@ -92,10 +92,14 @@ thích, không markdown code fence.`;
 }
 
 export function buildUserPrompt(req: LessonPlanRequest): string {
-  const disabilityLines =
-    req.accommodation.types.length > 0
-      ? req.accommodation.types.map((t) => `- ${DISABILITY_LABELS[t]}`).join('\n')
-      : '- (Lớp không có học sinh khuyết tật)';
+  const types = req.accommodation.types || [];
+  const hasHskt = types.length > 0;
+  const disabilityLines = hasHskt
+    ? types.map((t) => `- ${DISABILITY_LABELS[t]}`).join('\n')
+    : '- (Lớp không có học sinh khuyết tật)';
+  const hsktReminder = hasHskt
+    ? 'Lớp NÀY CÓ HSKT — theo quy tắc 5, bạn PHẢI viết khối <<<KT>>> cho hầu hết các mục (chỉ bỏ khi ngữ liệu gốc của đúng mục đó đã có sẵn phần riêng đầy đủ, xem quy tắc 5).'
+    : 'Lớp này KHÔNG có HSKT — TUYỆT ĐỐI không viết khối <<<KT>>> ở bất kỳ mục nào.';
 
   return `THÔNG TIN BÀI DẠY
 - Môn học: ${req.subject}
@@ -106,6 +110,7 @@ export function buildUserPrompt(req: LessonPlanRequest): string {
 LOẠI KHUYẾT TẬT CỦA HSKT TRONG LỚP (nếu có):
 ${disabilityLines}
 Ghi chú thêm của GV về HSKT: ${req.accommodation.notes || '(không có)'}
+${hsktReminder}
 
 YÊU CẦU THÊM CỦA GIÁO VIÊN:
 ${req.extraRequirements || '(không có)'}

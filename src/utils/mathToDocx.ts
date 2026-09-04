@@ -2,6 +2,8 @@ import { MathFraction, MathRadical, MathRoundBrackets, MathRun, MathSubScript, M
 import { mathNodeToLinearText } from './mathToLinearText';
 import type { MathNode } from '../types';
 
+type MathComponent = MathRun | MathFraction | MathSuperScript | MathSubScript | MathSubSuperScript | MathRadical | MathRoundBrackets;
+
 /**
  * Dựng lại object công thức Word (OMML) THẬT từ cây MathNode, dùng API Math của
  * thư viện `docx`. Chỉ các cấu trúc phổ biến (phân số, số mũ, chỉ số dưới, căn,
@@ -9,7 +11,7 @@ import type { MathNode } from '../types';
  * (nary/tổng-tích phân, ma trận, dấu gạch ngang, dấu mũ accent) được xuất dưới
  * dạng văn bản công thức tuyến tính (linearized) để không mất dữ liệu.
  */
-export function mathNodeToDocxComponents(node: MathNode): (MathRun | MathFraction | MathSuperScript | MathSubScript | MathSubSuperScript | MathRadical | MathRoundBrackets)[] {
+export function mathNodeToDocxComponents(node: MathNode): MathComponent[] {
   switch (node.kind) {
     case 'text':
       return node.value ? [new MathRun(node.value)] : [];
@@ -55,8 +57,28 @@ export function mathNodeToDocxComponents(node: MathNode): (MathRun | MathFractio
       if (node.open === '(' && node.close === ')') {
         return [new MathRoundBrackets({ children: mathNodeToDocxComponents(node.base) })];
       }
-      return [new MathRun(node.open), ...mathNodeToDocxComponents(node.base), new MathRun(node.close)];
-    // nary, func, bar, acc, matrix: chưa có API tương ứng ổn định trong `docx` ->
+      return [
+        ...(node.open ? [new MathRun(node.open)] : []),
+        ...mathNodeToDocxComponents(node.base),
+        ...(node.close ? [new MathRun(node.close)] : []),
+      ];
+    // Hệ phương trình / hệ điều kiện (m:eqArr, m:m) -> xếp mỗi dòng trên một
+    // hàng riêng trong CÙNG một object công thức, dùng MathRun('\n') để ngắt
+    // dòng (thư viện `docx` tự tách '\n' thành <w:br/> lúc xuất) — mỗi dòng
+    // vẫn được dựng thành công thức thật (phân số, số mũ... bên trong dòng đó
+    // vẫn hiển thị đúng), thay vì gộp tất cả thành một dòng chữ dài khó đọc.
+    case 'matrix': {
+      const out: MathComponent[] = [];
+      node.rows.forEach((row, ri) => {
+        if (ri > 0) out.push(new MathRun('\n'));
+        row.forEach((cell, ci) => {
+          if (ci > 0) out.push(new MathRun('   '));
+          out.push(...mathNodeToDocxComponents(cell));
+        });
+      });
+      return out;
+    }
+    // nary, func, bar, acc: chưa có API tương ứng ổn định trong `docx` ->
     // xuất dạng văn bản tuyến tính, vẫn nằm trong object công thức (font Cambria Math)
     default:
       return [new MathRun(mathNodeToLinearText(node))];
