@@ -40,12 +40,13 @@ export async function generateLessonPlan(req: LessonPlanRequest): Promise<Genera
 // Ngưỡng độ dài (ký tự) của ngữ liệu gốc, qua đó coi là "giáo án dài" và chủ
 // động CHIA NHỎ thành nhiều phần rồi gọi API riêng cho từng phần — thay vì
 // dồn hết vào một lượt gọi duy nhất rồi rủi ro bị timeout (xem api/generate.ts
-// và src/utils/chunkSource.ts). Cố tình đặt THẤP hơn ngưỡng LONG_DOC_CHAR_THRESHOLD
-// phía server (nơi quyết định tự chuyển sang model nhanh) một chút, vì chia
-// nhỏ + gọi API nhiều lần luôn an toàn hơn dựa hẳn vào một model nhanh cho
-// MỘT giáo án cực dài.
-const CHUNK_THRESHOLD_CHARS = 15_000;
-const CHUNK_TARGET_CHARS = 8_000;
+// và src/utils/chunkSource.ts). Đặt THẤP để chủ động chia nhỏ sớm — thực tế
+// cho thấy ngay cả một phần ~6.800 ký tự cũng có thể bị timeout khi Gemini
+// đang phản hồi chậm bất thường (tải cao phía Google, không phải do input
+// dài) — phần càng nhỏ, output cần sinh ra càng ít, càng ít rủi ro timeout dù
+// model có đang chậm hơn bình thường.
+const CHUNK_THRESHOLD_CHARS = 6_000;
+const CHUNK_TARGET_CHARS = 3_500;
 
 /**
  * Soạn KHBD cho một giáo án DÀI bằng cách chia ngữ liệu gốc thành nhiều phần

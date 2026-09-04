@@ -336,17 +336,23 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
     let { response, attempts, timeoutErr } = await callGeminiWithRetry(primaryModel, true);
 
-    // Model chính hết giờ (không phải quá tải, chỉ đơn giản là chậm) -> nếu
-    // vẫn còn kha khá ngân sách và model chính KHÔNG phải là model nhanh
-    // (nghĩa là chưa thử phương án nhanh), thử ngay LITE_MODEL một lần; nếu
-    // không còn đủ thời gian hoặc đã là LITE_MODEL rồi, báo lỗi rõ ràng luôn.
-    if (timeoutErr && primaryModel !== LITE_MODEL && remainingMs() >= 15_000) {
-      ({ response, attempts, timeoutErr } = await callGeminiWithRetry(LITE_MODEL, true));
+    // Model chính hết giờ (không phải quá tải kiểu 503, mà là XỬ LÝ CHẬM —
+    // thường do bản thân Gemini đang tải cao, không hồi đáp nhanh dù input
+    // không hề dài) -> thử lần lượt các model KHÁC chưa dùng, miễn còn đủ
+    // ngân sách cho một lượt thử nữa. Không thử lại y model vừa timeout —
+    // model đó vừa chứng minh nó đang chậm.
+    const modelsTriedOnTimeout = new Set([primaryModel]);
+    const timeoutFallbackOrder = [LITE_MODEL, FALLBACK_MODEL, MODEL].filter((m) => !modelsTriedOnTimeout.has(m));
+    for (const nextModel of timeoutFallbackOrder) {
+      if (!timeoutErr) break;
+      if (remainingMs() < 15_000) break;
+      modelsTriedOnTimeout.add(nextModel);
+      ({ response, attempts, timeoutErr } = await callGeminiWithRetry(nextModel, true));
     }
 
     function sendTimeoutError(err: InstanceType<typeof GeminiTimeoutError>) {
       res.status(503).json({
-        error: `${err.message} Đây là giáo án dài, cần nhiều thời gian xử lý hơn mức server hiện cho phép. Thử: (1) soạn lại — hệ thống sẽ tự ưu tiên model nhanh hơn cho giáo án dài, (2) chia nhỏ giáo án gốc thành từng phần rồi soạn riêng từng phần, hoặc (3) nếu dùng gói Vercel Pro, tăng "maxDuration" trong vercel.json lên 120-300 giây rồi deploy lại.`,
+        error: `${err.message} Đây là giáo án dài, cần nhiều thời gian xử lý hơn mức server hiện cho phép (hoặc Gemini đang phản hồi chậm bất thường do tải cao). Thử: (1) soạn lại sau vài phút — hệ thống đã tự thử nhiều model khác nhau, (2) chia nhỏ giáo án gốc thành từng phần rồi soạn riêng từng phần, hoặc (3) nếu dùng gói Vercel Pro, tăng "maxDuration" trong vercel.json lên 120-300 giây rồi deploy lại.`,
       });
     }
 
