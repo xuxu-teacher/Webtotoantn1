@@ -1,9 +1,12 @@
 import type { VercelRequest, VercelResponse } from '@vercel/node';
 
-// Kiểm tra https://docs.claude.com/en/docs/about-claude/models để lấy model ID mới nhất
-// trước khi triển khai — model ID có thể thay đổi theo thời gian.
-const MODEL = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-5';
-const ANTHROPIC_API_URL = 'https://api.anthropic.com/v1/messages';
+// Kiểm tra https://ai.google.dev/gemini-api/docs/models để lấy model ID mới nhất
+// trước khi triển khai — model ID có thể thay đổi/nghỉ hưu theo thời gian.
+// gemini-3.5-flash: bản GA hiện tại (nhanh, rẻ, đủ tốt cho việc soạn văn bản dài
+// như KHBD). Nếu muốn chất lượng cao hơn (chấp nhận chậm/đắt hơn), đổi thành
+// "gemini-3.1-pro-preview" qua biến môi trường GEMINI_MODEL.
+const MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
+const GEMINI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/${MODEL}:generateContent`;
 
 interface LessonPlanRequestBody {
   subject: string;
@@ -119,43 +122,52 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return;
   }
 
-  const apiKey = process.env.ANTHROPIC_API_KEY;
+  const apiKey = process.env.GEMINI_API_KEY;
   if (!apiKey) {
-    res.status(500).json({ error: 'Thiếu ANTHROPIC_API_KEY trên server (xem README, khai báo trong Vercel Environment Variables).' });
+    res.status(500).json({ error: 'Thiếu GEMINI_API_KEY trên server (xem README, khai báo trong Vercel Environment Variables).' });
     return;
   }
 
   const body = req.body as LessonPlanRequestBody;
 
   try {
-    const response = await fetch(ANTHROPIC_API_URL, {
+    const response = await fetch(GEMINI_API_URL, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
+        // Header (thay vì query param ?key=...) để key không bị lộ trong access log.
+        'x-goog-api-key': apiKey,
       },
       body: JSON.stringify({
-        model: MODEL,
-        max_tokens: 8000,
-        system: buildSystemPrompt(),
-        messages: [{ role: 'user', content: buildUserPrompt(body) }],
+        system_instruction: { parts: [{ text: buildSystemPrompt() }] },
+        contents: [{ role: 'user', parts: [{ text: buildUserPrompt(body) }] }],
+        generationConfig: { maxOutputTokens: 8000 },
       }),
     });
 
     if (!response.ok) {
       const errText = await response.text();
-      res.status(response.status).json({ error: `Lỗi từ Anthropic API: ${errText}` });
+      res.status(response.status).json({ error: `Lỗi từ Gemini API: ${errText}` });
       return;
     }
 
     const data = await response.json();
-    const markdown = (data.content || [])
-      .filter((b: any) => b.type === 'text')
-      .map((b: any) => b.text)
+    const candidate = (data.candidates || [])[0];
+
+    if (!candidate) {
+      res.status(502).json({ error: 'Gemini không trả về nội dung nào (có thể bị chặn bởi bộ lọc an toàn).' });
+      return;
+    }
+
+    const markdown = (candidate.content?.parts || [])
+      .filter((p: any) => typeof p.text === 'string')
+      .map((p: any) => p.text)
       .join('\n');
 
     const warnings: string[] = [];
+    if (candidate.finishReason && candidate.finishReason !== 'STOP') {
+      warnings.push(`Phản hồi có thể chưa đầy đủ (finishReason: ${candidate.finishReason}) — kiểm tra lại bản xem trước trước khi dùng.`);
+    }
     if (!markdown.includes('<<<TRAI')) {
       warnings.push('AI có thể chưa tuân thủ đúng định dạng 2 cột yêu cầu — kiểm tra lại bản xem trước trước khi dùng.');
     }

@@ -17,11 +17,22 @@
     -->
     <script>
       window.MathJax = {
-        tex: { inlineMath: [['\\(', '\\)']] },
+        tex: {
+          inlineMath: [['\\(', '\\)'], ['$', '$']],
+          displayMath: [['\\[', '\\]'], ['$$', '$$']],
+          processEscapes: true,
+        },
         options: { skipHtmlTags: ['script', 'noscript', 'style', 'textarea', 'pre', 'code'] },
       };
     </script>
     <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js" defer></script>
+    <style>
+      /* Công thức dài tự cuộn trong khung, không bao giờ đẩy vỡ bố cục trang */
+      mjx-container { max-width: 100%; overflow-x: auto; overflow-y: hidden; }
+      mjx-container[display='true'] { margin: 0.5em 0 !important; }
+      html, body, #root { overflow-x: hidden; }
+      img { max-width: 100%; height: auto; }
+    </style>
   </head>
   <body>
     <div id="root"></div>

@@ -23,8 +23,8 @@ src/
     aiSourceBuilder.ts     Dựng ngữ liệu gửi AI (placeholder + gợi ý nội dung công thức)
     mathTypeConverterClient.ts  Gọi thẳng máy chủ MathType->LaTeX riêng của bạn từ trình duyệt
   types/index.ts      Kiểu dữ liệu dùng chung
-api/generate.ts      Vercel Serverless Function — gọi Anthropic API (API key giữ ở server)
-api/health.ts        Endpoint kiểm tra server đã cấu hình ANTHROPIC_API_KEY chưa
+api/generate.ts      Vercel Serverless Function — gọi Gemini API (API key giữ ở server)
+api/health.ts        Endpoint kiểm tra server đã cấu hình GEMINI_API_KEY chưa
 ```
 
 ## Chạy thử local
@@ -33,7 +33,7 @@ api/health.ts        Endpoint kiểm tra server đã cấu hình ANTHROPIC_API_K
 npm install
 # Cần Vercel CLI để chạy được cả /api (serverless function) lúc dev:
 npm install -g vercel
-cp .env.example .env.local   # điền ANTHROPIC_API_KEY thật vào .env.local
+cp .env.example .env.local   # điền GEMINI_API_KEY thật vào .env.local
 vercel dev
 ```
 
@@ -45,21 +45,21 @@ một backend Express tương đương và trỏ proxy trong `vite.config.ts`.
 
 1. Đẩy thư mục này lên một repo Git (GitHub/GitLab).
 2. Import repo vào Vercel (tương tự các dự án Supabase/Vercel khác bạn đang có).
-3. Vào **Project Settings → Environment Variables**, thêm `ANTHROPIC_API_KEY`
-   (lấy tại console.anthropic.com). Không đưa key này vào code phía client.
+3. Vào **Project Settings → Environment Variables**, thêm `GEMINI_API_KEY`
+   (lấy tại aistudio.google.com → Get API key). Không đưa key này vào code phía client.
 4. Deploy. Vercel tự nhận diện `api/generate.ts` là serverless function.
 
 ## Kiểm tra cấu hình API key
 
 Truy cập `/api/health` sẽ trả về `{ "hasApiKey": true|false }`. App tự gọi endpoint
-này lúc tải trang — nếu server chưa có `ANTHROPIC_API_KEY`, một banner vàng sẽ hiện
+này lúc tải trang — nếu server chưa có `GEMINI_API_KEY`, một banner sẽ hiện
 ở đầu trang thay vì để bạn phải bấm nút rồi mới biết bị lỗi 500. Nếu chạy `vite`
 thuần (không có `/api`), banner sẽ không hiện (không xác định được, không phải là
 "đã cấu hình đúng") — đây là hành vi có chủ đích để tránh cảnh báo sai lúc dev.
 
 ## Vì sao API key nằm ở server, không gọi thẳng từ trình duyệt?
 
-Nếu gọi Anthropic API trực tiếp từ React, bạn buộc phải nhúng API key vào code
+Nếu gọi Gemini API trực tiếp từ React, bạn buộc phải nhúng API key vào code
 client — ai mở DevTools cũng lấy được key và dùng ké chi phí của bạn. Vì vậy khoá
 được giữ trong biến môi trường của serverless function, trình duyệt chỉ gọi vào
 `/api/generate` do chính bạn triển khai.
@@ -180,7 +180,7 @@ Luồng hoạt động:
    gửi cho AI (xem `aiSourceBuilder.ts`).
 
 **Vì sao gọi thẳng từ trình duyệt, không qua serverless function của app** (khác
-với cách giấu `ANTHROPIC_API_KEY`): server MathType chạy trên Render free tier
+với cách giấu `GEMINI_API_KEY`): server MathType chạy trên Render free tier
 sẽ ngủ đông khi không có traffic, cold-start có thể mất 60-90 giây để đánh thức.
 Một hàm serverless của Vercel có giới hạn thời gian chạy (Hobby: 10 giây) sẽ bị
 timeout trước khi server kịp thức dậy. Gọi thẳng từ trình duyệt (giống hệt cách

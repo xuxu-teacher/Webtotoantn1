@@ -28,6 +28,7 @@ export default function App() {
 
   const [converting, setConverting] = useState(false);
   const [convertStatus, setConvertStatus] = useState<string | null>(null);
+  const [bannerDismissed, setBannerDismissed] = useState(false);
 
   useEffect(() => {
     fetch('/api/health')
@@ -36,26 +37,33 @@ export default function App() {
       .catch(() => setApiKeyConfigured(null)); // không xác định được (ví dụ đang chạy vite thuần) -> không cảnh báo
   }, []);
 
-  function handleParsed(doc: ParsedDocument) {
+  async function handleParsed(doc: ParsedDocument) {
     setParsedDoc(doc);
     if (!titleTouched && doc.suggestedTitle) {
       setLessonTitle(doc.suggestedTitle);
     }
+    // Tự động chuyển đổi công thức MathType (OLE) ngay sau khi đọc file — giáo
+    // viên không cần bấm thêm nút nào nữa, giống trải nghiệm ở trang thi thử.
+    await runConversion(doc);
   }
 
-  async function handleConvertEquations() {
-    if (!parsedDoc) return;
-    const targets = Object.values(parsedDoc.equations).filter(
+  async function runConversion(doc: ParsedDocument) {
+    const targets = Object.values(doc.equations).filter(
       (e) => !e.convertible && !e.latexFromExternalConverter && e.oleObjectBase64
     );
     if (targets.length === 0) return;
 
     setConverting(true);
+    setConvertStatus(null);
     await convertEquationsBatch(targets, (update) => setConvertStatus(update.message));
     // targets là tham chiếu tới các object trong parsedDoc.equations -> đã được mutate,
     // chỉ cần tạo bản sao mới của map để React nhận biết thay đổi và render lại.
     setParsedDoc((prev) => (prev ? { ...prev, equations: { ...prev.equations } } : prev));
     setConverting(false);
+  }
+
+  function handleRetryConversion() {
+    if (parsedDoc) runConversion(parsedDoc);
   }
 
   async function handleGenerate() {
@@ -96,11 +104,22 @@ export default function App() {
 
   return (
     <div className="page">
-      {apiKeyConfigured === false && (
+      {apiKeyConfigured === false && !bannerDismissed && (
         <div className="config-banner">
-          ⚠️ Server chưa cấu hình <code>ANTHROPIC_API_KEY</code> — nút "Soạn giáo án bằng AI" sẽ báo lỗi.
-          Khai báo biến này trong <strong>Vercel → Project Settings → Environment Variables</strong> rồi
-          deploy lại (xem chi tiết trong README.md).
+          <span className="config-banner__icon" aria-hidden="true">ⓘ</span>
+          <p className="config-banner__text">
+            Server chưa cấu hình <code>GEMINI_API_KEY</code> — nút "Soạn giáo án bằng AI" sẽ báo lỗi.
+            Khai báo biến này trong <strong>Vercel → Project Settings → Environment Variables</strong> rồi
+            deploy lại (xem chi tiết trong README.md).
+          </p>
+          <button
+            className="config-banner__close"
+            onClick={() => setBannerDismissed(true)}
+            aria-label="Đóng thông báo"
+            title="Đóng"
+          >
+            ×
+          </button>
         </div>
       )}
 
@@ -169,12 +188,20 @@ export default function App() {
                   ⚠️ {noPreviewCount} công thức không tìm thấy dữ liệu lẫn ảnh xem trước trong file gốc.
                 </p>
               )}
-              {pendingConvertCount > 0 && (
+              {converting && (
+                <div className="convert-box convert-box--busy">
+                  <span className="spinner" aria-hidden="true" />
+                  <p className="convert-box__status">{convertStatus || 'Đang tự động chuyển đổi công thức MathType…'}</p>
+                </div>
+              )}
+              {!converting && pendingConvertCount > 0 && (
                 <div className="convert-box">
-                  <button className="btn btn--convert" onClick={handleConvertEquations} disabled={converting}>
-                    {converting ? 'Đang chuyển đổi…' : `🔄 Chuyển đổi ${pendingConvertCount} công thức bằng máy chủ MathType→LaTeX`}
+                  <p className="convert-box__status convert-box__status--warning">
+                    {convertStatus || `${pendingConvertCount} công thức chưa chuyển đổi được.`}
+                  </p>
+                  <button className="btn btn--convert" onClick={handleRetryConversion}>
+                    🔄 Thử chuyển đổi lại
                   </button>
-                  {convertStatus && <p className="convert-box__status">{convertStatus}</p>}
                 </div>
               )}
             </div>

@@ -64,7 +64,8 @@ export default function FileUpload({ onParsed }: Props) {
         {fileName ? fileName : 'Kéo thả hoặc bấm để chọn giáo án (.docx)'}
       </p>
       <p className="upload-zone__hint">
-        Nhận diện công thức Word (Insert Equation). Công thức MathType kiểu OLE cũ sẽ được báo riêng.
+        Tự nhận diện công thức Word (Insert Equation) và công thức MathType kiểu OLE cũ — công thức
+        MathType sẽ được tự động chuyển đổi ngay sau khi đọc file, không cần thao tác gì thêm.
       </p>
       {loading && <p className="upload-zone__status">Đang đọc file…</p>}
       {error && <p className="upload-zone__error">{error}</p>}
