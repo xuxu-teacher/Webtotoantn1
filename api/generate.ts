@@ -59,17 +59,24 @@ KT>>>
    công thức [[EQ:CTx]] như bản gốc. TUYỆT ĐỐI KHÔNG diễn giải lại, không tóm tắt, không đổi
    văn phong, không "chuẩn hoá" theo khung 5512. Nếu ngữ liệu gốc không chia rõ theo mục nào
    đó, chỉ cần trích đúng phần liên quan gần nhất, không tự bịa thêm nội dung gốc.
+   NẾU ngữ liệu gốc của mục này chứa BẢNG dạng Markdown (dòng bắt đầu bằng "|", có dòng phân
+   cách "|---|---|" ngay sau dòng tiêu đề), khối GOC PHẢI CHÉP LẠI NGUYÊN VẸN bảng đó, ĐÚNG
+   Y HỆT cú pháp Markdown gốc (đủ số cột, đủ số dòng, đúng nội dung từng ô, không được bỏ
+   cột, không gộp cột, không chuyển bảng thành đoạn văn xuôi).
 4. KHỐI SO (năng lực số) — CHỈ viết khối này khi nội dung gốc của đúng mục đang xét CHƯA có
    sẵn yếu tố năng lực số/công nghệ nào (vd: chưa nhắc phần mềm, công cụ số, AI, máy tính...).
-   Nếu ngữ liệu gốc của mục này ĐÃ có sẵn (ví dụ đã dùng GeoGebra, PowerPoint, AI...) thì
-   BỎ HẲN khối SO cho mục đó — không lặp lại nội dung đã có, không viết khối rỗng.
+   Nếu ngữ liệu gốc của mục này ĐÃ có sẵn (ví dụ đã dùng GeoGebra, PowerPoint, AI...) — KỂ CẢ
+   khi điều đó nằm trong một CỘT CÓ SẴN của bảng gốc (ví dụ cột tên "NLS", "Năng lực số",
+   hoặc bất kỳ cột nào có nội dung về công cụ số/công nghệ) — thì BỎ HẲN khối SO cho mục đó,
+   không lặp lại nội dung đã có, không viết khối rỗng.
    Khi viết, nêu cụ thể công cụ số/AI học sinh hoặc giáo viên có thể dùng thêm và cách dùng,
    gắn với đúng nội dung của mục đó (không viết chung chung).
 5. KHỐI KT (giáo dục hòa nhập) — CHỈ viết khối này nếu lớp CÓ học sinh khuyết tật (xem danh
    sách loại khuyết tật trong phần THÔNG TIN BÀI DẠY bên dưới). Nếu lớp KHÔNG có HSKT (danh
-   sách rỗng), TUYỆT ĐỐI không viết khối KT ở bất kỳ mục nào trong toàn bộ bài. Khi viết, mô
-   tả hành động điều chỉnh cụ thể của GV cho từng loại khuyết tật đã chọn, gắn với đúng nội
-   dung của mục đó (không viết chung chung).
+   sách rỗng), TUYỆT ĐỐI không viết khối KT ở bất kỳ mục nào trong toàn bộ bài. Tương tự mục
+   4, nếu bảng gốc đã có sẵn một cột về hỗ trợ/điều chỉnh cho HSKT thì cũng bỏ khối KT cho
+   mục đó, tránh trùng lặp. Khi viết, mô tả hành động điều chỉnh cụ thể của GV cho từng loại
+   khuyết tật đã chọn, gắn với đúng nội dung của mục đó (không viết chung chung).
 6. Placeholder dạng [[EQ:CT1]], [[EQ:CT2]]... trong ngữ liệu gốc LÀ CÔNG THỨC TOÁN của bài.
    Có thể có chú thích ngay sau, dạng [[EQ:CT1]](ct: x^2+3x-4) — phần (ct: ...) CHỈ để bạn
    hiểu nội dung công thức, TUYỆT ĐỐI KHÔNG chép lại phần (ct: ...) vào bài. Trong khối GOC,
