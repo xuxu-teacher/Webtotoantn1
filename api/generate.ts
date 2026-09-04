@@ -179,6 +179,7 @@ function countSectionsMissingKt(markdown: string): { total: number; missing: num
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  const startedAt = Date.now();
   if (req.method !== 'POST') {
     res.status(405).json({ error: 'Chỉ hỗ trợ POST' });
     return;
@@ -191,6 +192,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }
 
   const body = req.body as LessonPlanRequestBody;
+
+  // Vercel giới hạn CỨNG hàm này 60s (vercel.json: maxDuration) rồi tự "giết"
+  // và trả 504 — dù code có đang retry dở dang cũng không kịp trả lỗi gọn gàng.
+  // Vì vậy MỌI lần thử lại/đổi model dự phòng bên dưới đều phải tự kiểm tra
+  // còn bao nhiêu thời gian TRƯỚC khi thử thêm, và DỪNG SỚM (trả lỗi 503 gọn
+  // gàng ngay) nếu không còn đủ ngân sách — thà báo lỗi rõ ràng còn hơn để
+  // Vercel ngắt đột ngột giữa chừng thành 504 khó hiểu.
+  const TIME_BUDGET_MS = 50_000; // chừa ~10s so với maxDuration=60 để kịp dựng + gửi response
+  const remainingMs = () => TIME_BUDGET_MS - (Date.now() - startedAt);
 
   // Ngân sách token lớn vì khối GOC phải chép nguyên văn toàn bộ giáo án gốc +
   // thêm cột SO/KT -> output dài hơn nhiều so với việc chỉ tóm tắt/viết lại,
@@ -231,16 +241,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   // 503 (UNAVAILABLE, "quá tải") và 429 (rate limit) là lỗi TẠM THỜI ở phía
   // Google, không phải lỗi ở code hay ở dữ liệu giáo án của giáo viên -> tự
   // thử lại vài lần với thời gian chờ tăng dần trước khi coi là thất bại thật
-  // sự. Vercel giới hạn hàm này 60s (xem vercel.json) nên số lần thử + thời
-  // gian chờ được canh để không vượt quá ngân sách đó.
+  // sự — NHƯNG chỉ khi ngân sách thời gian còn lại (xem TIME_BUDGET_MS ở trên)
+  // đủ chỗ cho ít nhất một lần thử nữa; nếu sắp hết giờ, dừng ngay và trả lỗi
+  // luôn thay vì liều thử thêm rồi bị Vercel ngắt giữa chừng thành 504.
   const RETRYABLE_STATUSES = new Set([429, 503]);
   const RETRY_DELAYS_MS = [1500, 3500];
+  // Thời gian tối thiểu cần còn lại để đáng thử thêm một lần: 503/429 thường
+  // trả về gần như ngay lập tức (không tốn nhiều giây xử lý thật), nên chỉ cần
+  // chừa đủ cho độ trễ chờ (delay) + một khoảng dư an toàn.
+  const MIN_MS_FOR_ONE_MORE_TRY = 4_000;
 
   async function callGeminiWithRetry(model: string, includeThinkingConfig: boolean) {
     let response = await callGemini(model, includeThinkingConfig);
     let attempts = 1;
     for (const delay of RETRY_DELAYS_MS) {
       if (response.ok || !RETRYABLE_STATUSES.has(response.status)) break;
+      if (remainingMs() < delay + MIN_MS_FOR_ONE_MORE_TRY) break;
       await sleep(delay);
       response = await callGemini(model, includeThinkingConfig);
       attempts++;
@@ -264,8 +280,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     // Model chính vẫn quá tải sau khi đã thử lại nhiều lần -> thử 1 lần với
-    // model dự phòng trước khi báo lỗi hẳn cho giáo viên.
-    if (!response.ok && RETRYABLE_STATUSES.has(response.status) && FALLBACK_MODEL !== MODEL) {
+    // model dự phòng, NHƯNG chỉ khi còn đủ thời gian cho một lượt sinh nội
+    // dung ĐẦY ĐỦ (không chỉ một lần fail nhanh) — vì nếu model dự phòng lại
+    // xử lý được (không quá tải) thì nó sẽ chạy hết một lượt sinh KHBD thật sự
+    // dài, có thể tốn 20-40s cho giáo án dài, chứ không trả lời ngay như khi
+    // bị 503. Nếu không đủ ngân sách, bỏ qua bước này để tránh bị Vercel ngắt
+    // giữa chừng thành 504.
+    const MIN_MS_FOR_FALLBACK_ATTEMPT = 20_000;
+    if (
+      !response.ok &&
+      RETRYABLE_STATUSES.has(response.status) &&
+      FALLBACK_MODEL !== MODEL &&
+      remainingMs() >= MIN_MS_FOR_FALLBACK_ATTEMPT
+    ) {
       await sleep(1500);
       ({ response, attempts } = await callGeminiWithRetry(FALLBACK_MODEL, true));
     }
