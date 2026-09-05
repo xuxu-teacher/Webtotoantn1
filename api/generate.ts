@@ -149,17 +149,23 @@ KT>>>
    xuất hiện trong câu — TUYỆT ĐỐI KHÔNG viết công thức ra bằng lời, không đổi sang LaTeX,
    không chép nội dung từ mục chú thích vào thay cho placeholder, không xoá placeholder.
 6b. Placeholder dạng [[IMG:IMG1]], [[IMG:IMG2]]... trong ngữ liệu gốc LÀ HÌNH VẼ/ẢNH MINH HOẠ
-   (ví dụ hình hình học, đồ thị, ảnh chụp màn hình) — không phải công thức và không có văn
-   bản thay thế. Khi gặp placeholder này trong khối GOC, CHỈ được xuất lại ĐÚNG NGUYÊN VĂN
-   placeholder trần đó (ví dụ [[IMG:IMG1]]) tại đúng vị trí xuất hiện — TUYỆT ĐỐI KHÔNG mô
-   tả hình bằng lời, không đoán nội dung hình để viết thay, không xoá placeholder.
+   (ví dụ hình hình học, đồ thị, ẢNH CHỤP/VẼ BẢNG BIẾN THIÊN, ảnh chụp màn hình) — không phải
+   công thức và không có văn bản thay thế. Khi gặp placeholder này trong khối GOC, CHỈ được
+   xuất lại ĐÚNG NGUYÊN VĂN placeholder trần đó (ví dụ [[IMG:IMG1]]) tại đúng vị trí xuất
+   hiện — TUYỆT ĐỐI KHÔNG mô tả hình bằng lời, không đoán nội dung hình để viết thay, không
+   xoá placeholder. ĐẶC BIỆT: RẤT NHIỀU bảng biến thiên/bảng xét dấu trong giáo án Việt Nam
+   là ẢNH (chèn bằng Insert Picture), KHÔNG phải bảng chữ — khi gặp [[IMG:xxx]] ngay sau chữ
+   "Bảng biến thiên:"/"Bảng xét dấu:", TUYỆT ĐỐI KHÔNG được "vẽ lại" bảng đó bằng ký tự "|",
+   bằng bảng Markdown, hay bằng bất kỳ ký hiệu văn bản nào khác (dù bạn tự suy luận được hình
+   dạng bảng biến thiên đó trông ra sao) — CHỈ giữ nguyên placeholder trần, không thêm bất kỳ
+   ký tự nào khác thay cho nó.
 6c. Placeholder dạng [[TBL:TBL1]], [[TBL:TBL2]]... trong ngữ liệu gốc LÀ MỘT BẢNG LỒNG bên
-   trong ô của bảng ngoài (ví dụ bảng xét dấu/bảng biến thiên đặt trong cột "SẢN PHẨM DỰ
-   KIẾN") — hệ thống sẽ tự dựng lại thành bảng thật khi hiển thị, bạn KHÔNG thấy được nội
-   dung bảng đó ở đây. Khi gặp placeholder này trong khối GOC, CHỈ được xuất lại ĐÚNG NGUYÊN
-   VĂN placeholder trần đó (ví dụ [[TBL:TBL1]]) tại đúng vị trí xuất hiện trong câu — TUYỆT
-   ĐỐI KHÔNG viết lại bảng đó bằng ký tự "|" hay bất kỳ hình thức nào khác, không đoán nội
-   dung bảng để mô tả thay, không xoá placeholder.
+   trong ô của bảng ngoài (ví dụ bảng xét dấu/bảng biến thiên trình bày bằng bảng Word thật —
+   không phải ảnh — đặt trong cột "SẢN PHẨM DỰ KIẾN") — hệ thống sẽ tự dựng lại thành bảng
+   thật khi hiển thị, bạn KHÔNG thấy được nội dung bảng đó ở đây. Khi gặp placeholder này
+   trong khối GOC, CHỈ được xuất lại ĐÚNG NGUYÊN VĂN placeholder trần đó (ví dụ [[TBL:TBL1]])
+   tại đúng vị trí xuất hiện trong câu — TUYỆT ĐỐI KHÔNG viết lại bảng đó bằng ký tự "|" hay
+   bất kỳ hình thức nào khác, không đoán nội dung bảng để mô tả thay, không xoá placeholder.
 7. Nếu trong khối SO hoặc KT bạn cần viết MỘT công thức toán MỚI (không có trong ngữ liệu
    gốc, ví dụ ví dụ minh hoạ trong một prompt gợi ý AI), được phép dùng LaTeX bọc trong
    $...$, nhưng CHỈ dùng cú pháp đơn giản: chữ/số, ^{...} (số mũ), _{...} (chỉ số dưới),
@@ -239,6 +245,21 @@ function countSectionsMissingKt(markdown: string): { total: number; missing: num
     if (!hasKt) missing++;
   }
   return { total: sections.length, missing };
+}
+
+// Kiểm tra placeholder [[EQ:...]]/[[IMG:...]]/[[TBL:...]] có trong ngữ liệu
+// gốc gửi cho AI (body.sourceContent) mà KHÔNG còn xuất hiện trong markdown
+// AI trả về — dấu hiệu AI đã "viết lại" hoặc bỏ mất công thức/hình vẽ/bảng
+// lồng thay vì giữ nguyên placeholder như quy tắc 6/6b/6c yêu cầu. Ví dụ thực
+// tế đã gặp: một bảng biến thiên vốn là ẢNH ([[IMG:xxx]]) bị AI "vẽ lại" bằng
+// ký tự "|" thành bảng chữ, làm mất mũi tên/hình ảnh gốc và đôi khi để lộ cú
+// pháp bảng hỏng ra bài. Không thể tự sửa an toàn (không biết chính xác đoạn
+// văn nào AI đã tự viết ra để mà xoá) nên chỉ cảnh báo cho giáo viên kiểm tra.
+function findMissingPlaceholders(sourceContent: string, markdown: string): string[] {
+  const placeholderRe = /\[\[(?:EQ|IMG|TBL):[^\]]+\]\]/g;
+  const sourceSet = new Set(sourceContent.match(placeholderRe) || []);
+  const outputSet = new Set(markdown.match(placeholderRe) || []);
+  return [...sourceSet].filter((p) => !outputSet.has(p));
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -476,6 +497,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     if (!markdown.includes('<<<GOC')) {
       warnings.push('AI có thể chưa tuân thủ đúng định dạng cột yêu cầu — kiểm tra lại bản xem trước trước khi dùng.');
+    }
+
+    const missingPlaceholders = findMissingPlaceholders(body.sourceContent || '', markdown);
+    if (missingPlaceholders.length > 0) {
+      const imgN = missingPlaceholders.filter((p) => p.startsWith('[[IMG:')).length;
+      const eqN = missingPlaceholders.filter((p) => p.startsWith('[[EQ:')).length;
+      const tblN = missingPlaceholders.filter((p) => p.startsWith('[[TBL:')).length;
+      const parts = [
+        imgN ? `${imgN} hình vẽ/ảnh` : '',
+        eqN ? `${eqN} công thức` : '',
+        tblN ? `${tblN} bảng lồng` : '',
+      ].filter(Boolean);
+      warnings.push(
+        `AI có thể đã bỏ mất hoặc VIẾT LẠI thay vì giữ nguyên ${parts.join(', ')} từ file gốc (ví dụ vẽ lại bảng biến thiên bằng ký tự "|" thay vì giữ ảnh gốc) — kiểm tra kỹ các mục liên quan trong bản xem trước, đối chiếu với file Word gốc nếu cần.`
+      );
     }
 
     // Đếm CHI TIẾT theo từng mục (không chỉ kiểm tra "có ít nhất 1 khối KT trong

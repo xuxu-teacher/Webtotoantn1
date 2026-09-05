@@ -94,14 +94,12 @@ KT>>>
    CHỈ được xuất lại ĐÚNG NGUYÊN VĂN placeholder trần đó (ví dụ [[EQ:CT1]]) tại đúng vị trí
    xuất hiện trong câu — TUYỆT ĐỐI KHÔNG viết công thức ra bằng lời, không đổi sang LaTeX,
    không chép nội dung từ mục chú thích vào thay cho placeholder, không xoá placeholder.
-6b. Placeholder dạng [[IMG:IMG1]], [[IMG:IMG2]]... trong ngữ liệu gốc LÀ HÌNH VẼ/ẢNH MINH HOẠ
-   (ví dụ hình hình học, đồ thị, ảnh chụp màn hình) — không phải công thức và không có văn
-   bản thay thế. Khi gặp placeholder này trong khối GOC, CHỈ được xuất lại ĐÚNG NGUYÊN VĂN
-   placeholder trần đó (ví dụ [[IMG:IMG1]]) tại đúng vị trí xuất hiện — TUYỆT ĐỐI KHÔNG mô
-   tả hình bằng lời, không đoán nội dung hình để viết thay, không xoá placeholder.
-6c. Placeholder dạng [[TBL:TBL1]]... LÀ MỘT BẢNG LỒNG (ví dụ bảng biến thiên) trong ô của
-   bảng ngoài — CHỈ xuất lại ĐÚNG NGUYÊN VĂN placeholder đó, TUYỆT ĐỐI KHÔNG viết lại bảng
-   bằng "|", không mô tả thay, không xoá placeholder.
+6b. Placeholder dạng [[IMG:IMG1]]... LÀ HÌNH VẼ/ẢNH (kể cả bảng biến thiên dạng ẢNH) — CHỈ
+   xuất lại ĐÚNG NGUYÊN VĂN placeholder, TUYỆT ĐỐI KHÔNG mô tả, KHÔNG "vẽ lại" bảng biến
+   thiên bằng ký tự "|" hay bảng Markdown dù tự suy luận được hình dạng, không xoá placeholder.
+6c. Placeholder dạng [[TBL:TBL1]]... LÀ MỘT BẢNG LỒNG (bảng biến thiên bằng bảng Word thật,
+   không phải ảnh) trong ô của bảng ngoài — CHỈ xuất lại ĐÚNG NGUYÊN VĂN placeholder đó,
+   TUYỆT ĐỐI KHÔNG viết lại bảng bằng "|", không mô tả thay, không xoá placeholder.
 7. Nếu trong khối SO hoặc KT bạn cần viết MỘT công thức toán MỚI (không có trong ngữ liệu
    gốc, ví dụ ví dụ minh hoạ trong một prompt gợi ý AI), được phép dùng LaTeX bọc trong
    $...$, nhưng CHỈ dùng cú pháp đơn giản: chữ/số, ^{...} (số mũ), _{...} (chỉ số dưới),
