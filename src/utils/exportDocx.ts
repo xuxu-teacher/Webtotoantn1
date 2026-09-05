@@ -18,7 +18,7 @@ import { parseKhbd } from './khbdParser';
 import { parseContentLines, trySectionMerge } from './markdownTable';
 import { mathNodeToDocxComponents } from './mathToDocx';
 import { parseLatexSafe } from './latexToMathNode';
-import type { EquationEntry, ImageEntry } from '../types';
+import type { EquationEntry, ImageEntry, TableEntry } from '../types';
 
 type ParaChild = TextRun | DocxMath | ImageRun;
 
@@ -172,10 +172,104 @@ function inlineToRuns(
   return runs;
 }
 
+/** Dựng bảng Word thật từ dữ liệu dòng/cột thô — dùng chung cho bảng thường
+ * (từ Markdown "| |") và bảng LỒNG (từ placeholder [[TBL:xxx]], xem bên dưới). */
+function buildSimpleTable(
+  rows: string[][],
+  equations: Record<string, EquationEntry>,
+  images: Record<string, ImageEntry>,
+  tables: Record<string, TableEntry>
+): Table {
+  const [header, ...body] = rows;
+  const colCount = header.length;
+  const colWidth = Math.floor(100 / colCount);
+  const buildRow = (cells: string[], isHeader: boolean) =>
+    new TableRow({
+      children: cells.map(
+        (cell) =>
+          new TableCell({
+            width: { size: colWidth, type: WidthType.PERCENTAGE },
+            shading: isHeader ? { type: ShadingType.CLEAR, fill: 'E9ECF7' } : undefined,
+            children: lineToBlocks(cell, equations, images, tables),
+            margins: { top: 80, bottom: 80, left: 100, right: 100 },
+          })
+      ),
+    });
+  return new Table({
+    width: { size: 100, type: WidthType.PERCENTAGE },
+    rows: [buildRow(header, true), ...body.map((r) => buildRow(r, false))],
+  });
+}
+
+type LineBlockPart = { type: 'runs'; runs: ParaChild[] } | { type: 'table'; table: Table };
+
+/**
+ * Tách một dòng theo placeholder bảng LỒNG "[[TBL:xxx]]" (gắn từ docxParser.ts
+ * khi một ô của bảng gốc — ví dụ "SẢN PHẨM DỰ KIẾN" — chứa một bảng khác bên
+ * trong, như bảng biến thiên). Phần chữ thường đi qua inlineToRuns như cũ;
+ * phần placeholder dựng thành MỘT BẢNG WORD THẬT lồng bên trong, thay vì in
+ * nguyên văn "[[TBL:...]]" hay để lộ cú pháp bảng bị escape hỏng ("\| ... \|").
+ */
+function lineToBlockParts(
+  line: string,
+  equations: Record<string, EquationEntry>,
+  images: Record<string, ImageEntry>,
+  tables: Record<string, TableEntry>
+): LineBlockPart[] {
+  const segments = line.split(/(\[\[TBL:[^\]]+\]\])/g).filter((s) => s !== '');
+  const out: LineBlockPart[] = [];
+  let pendingRuns: ParaChild[] = [];
+  const flush = () => {
+    if (pendingRuns.length > 0) {
+      out.push({ type: 'runs', runs: pendingRuns });
+      pendingRuns = [];
+    }
+  };
+  for (const seg of segments) {
+    const tblMatch = seg.match(/^\[\[TBL:([^\]]+)\]\]$/);
+    if (tblMatch) {
+      flush();
+      const entry = tables[tblMatch[1]];
+      if (entry && entry.rows.length > 0) {
+        out.push({ type: 'table', table: buildSimpleTable(entry.rows, equations, images, tables) });
+      } else {
+        out.push({
+          type: 'runs',
+          runs: [
+            new TextRun({
+              text: `[bảng #${tblMatch[1]} — không trích được, xem file gốc]`,
+              italics: true,
+              color: 'A13D3D',
+            }),
+          ],
+        });
+      }
+      continue;
+    }
+    if (seg) pendingRuns.push(...inlineToRuns(seg, equations, images));
+  }
+  flush();
+  return out.length > 0 ? out : [{ type: 'runs', runs: [] }];
+}
+
+/** Dựng danh sách block (Paragraph/Table) từ một dòng — dùng cho nội dung
+ * bình thường (không phải gạch đầu dòng); xem lineToBlockParts. */
+function lineToBlocks(
+  line: string,
+  equations: Record<string, EquationEntry>,
+  images: Record<string, ImageEntry>,
+  tables: Record<string, TableEntry>
+): (Paragraph | Table)[] {
+  return lineToBlockParts(line, equations, images, tables).map((b) =>
+    b.type === 'table' ? b.table : new Paragraph({ children: b.runs })
+  );
+}
+
 function contentLinesToParagraphs(
   items: ReturnType<typeof parseContentLines>,
   equations: Record<string, EquationEntry>,
-  images: Record<string, ImageEntry>
+  images: Record<string, ImageEntry>,
+  tables: Record<string, TableEntry>
 ): (Paragraph | Table)[] {
   if (items.length === 0) return [new Paragraph({})];
 
@@ -192,7 +286,7 @@ function contentLinesToParagraphs(
               new TableCell({
                 width: { size: colWidth, type: WidthType.PERCENTAGE },
                 shading: isHeader ? { type: ShadingType.CLEAR, fill: 'E9ECF7' } : undefined,
-                children: [new Paragraph({ children: inlineToRuns(cell, equations, images) })],
+                children: lineToBlocks(cell, equations, images, tables),
                 margins: { top: 80, bottom: 80, left: 100, right: 100 },
               })
           ),
@@ -207,10 +301,17 @@ function contentLinesToParagraphs(
       continue;
     }
     if (item.type === 'bullet') {
-      out.push(new Paragraph({ bullet: { level: 0 }, children: inlineToRuns(item.text, equations, images) }));
+      const parts = lineToBlockParts(item.text, equations, images, tables);
+      parts.forEach((b, idx) => {
+        if (b.type === 'table') {
+          out.push(b.table, new Paragraph({}));
+          return;
+        }
+        out.push(idx === 0 ? new Paragraph({ bullet: { level: 0 }, children: b.runs }) : new Paragraph({ children: b.runs }));
+      });
       continue;
     }
-    out.push(new Paragraph({ children: inlineToRuns(item.text, equations, images) }));
+    out.push(...lineToBlocks(item.text, equations, images, tables));
   }
   return out;
 }
@@ -218,9 +319,10 @@ function contentLinesToParagraphs(
 function textBlockToParagraphs(
   text: string,
   equations: Record<string, EquationEntry>,
-  images: Record<string, ImageEntry>
+  images: Record<string, ImageEntry>,
+  tables: Record<string, TableEntry>
 ): (Paragraph | Table)[] {
-  return contentLinesToParagraphs(parseContentLines(text), equations, images);
+  return contentLinesToParagraphs(parseContentLines(text), equations, images, tables);
 }
 
 /**
@@ -233,7 +335,8 @@ function textBlockToParagraphs(
 function buildMergedTable(
   merged: NonNullable<ReturnType<typeof trySectionMerge>>,
   equations: Record<string, EquationEntry>,
-  images: Record<string, ImageEntry>
+  images: Record<string, ImageEntry>,
+  tables: Record<string, TableEntry>
 ): Table {
   const { headers, rows, soText, ktText } = merged;
   const extraCols = (soText !== null ? 1 : 0) + (ktText !== null ? 1 : 0);
@@ -282,7 +385,7 @@ function buildMergedTable(
             (cell) =>
               new TableCell({
                 width: { size: colWidth, type: WidthType.PERCENTAGE },
-                children: [new Paragraph({ children: inlineToRuns(cell, equations, images) })],
+                children: lineToBlocks(cell, equations, images, tables),
                 margins: { top: 80, bottom: 80, left: 100, right: 100 },
               })
           ),
@@ -295,7 +398,7 @@ function buildMergedTable(
                   width: { size: colWidth, type: WidthType.PERCENTAGE },
                   shading: { type: ShadingType.CLEAR, fill: 'DCE6F7' },
                   rowSpan: rows.length,
-                  children: contentLinesToParagraphs(parseContentLines(soText), equations, images),
+                  children: contentLinesToParagraphs(parseContentLines(soText), equations, images, tables),
                   margins: { top: 80, bottom: 80, left: 100, right: 100 },
                 }),
               ]
@@ -306,7 +409,7 @@ function buildMergedTable(
                   width: { size: colWidth, type: WidthType.PERCENTAGE },
                   shading: { type: ShadingType.CLEAR, fill: 'F2E2C8' },
                   rowSpan: rows.length,
-                  children: contentLinesToParagraphs(parseContentLines(ktText), equations, images),
+                  children: contentLinesToParagraphs(parseContentLines(ktText), equations, images, tables),
                   margins: { top: 80, bottom: 80, left: 100, right: 100 },
                 }),
               ]
@@ -335,6 +438,7 @@ export async function exportLessonPlanToDocx(
   markdown: string,
   equations: Record<string, EquationEntry>,
   images: Record<string, ImageEntry>,
+  tables: Record<string, TableEntry>,
   fileName: string,
   headerNote?: string,
   weekNumber?: string,
@@ -387,7 +491,7 @@ export async function exportLessonPlanToDocx(
       // lỡ nằm ngoài khối <<<GOC>>> (hoặc bị AI "làm phẳng" mất dấu xuống
       // dòng — xem repairFlattenedTables) sẽ hiện ra thành đoạn văn có dấu
       // "|" lộ liễu thay vì bảng thật.
-      children.push(...contentLinesToParagraphs(parseContentLines(block.text), equations, images));
+      children.push(...contentLinesToParagraphs(parseContentLines(block.text), equations, images, tables));
       continue;
     }
 
@@ -398,15 +502,15 @@ export async function exportLessonPlanToDocx(
     const merged = trySectionMerge(block.goc, block.so, block.kt);
     if (merged) {
       if (merged.beforeTable.length > 0) {
-        children.push(...contentLinesToParagraphs(merged.beforeTable, equations, images));
+        children.push(...contentLinesToParagraphs(merged.beforeTable, equations, images, tables));
       }
-      children.push(buildMergedTable(merged, equations, images), new Paragraph({}));
+      children.push(buildMergedTable(merged, equations, images, tables), new Paragraph({}));
       continue;
     }
 
     const gocCell = new TableCell({
       width: { size: hasSo && hasKt ? 50 : hasSo || hasKt ? 62 : 100, type: WidthType.PERCENTAGE },
-      children: textBlockToParagraphs(block.goc, equations, images),
+      children: textBlockToParagraphs(block.goc, equations, images, tables),
       margins: { top: 120, bottom: 120, left: 120, right: 120 },
     });
 
@@ -420,7 +524,7 @@ export async function exportLessonPlanToDocx(
               children: [new TextRun({ text: 'Năng lực số', bold: true, color: '2F6FA8', size: 18 })],
               spacing: { after: 80 },
             }),
-            ...textBlockToParagraphs(block.so, equations, images),
+            ...textBlockToParagraphs(block.so, equations, images, tables),
           ],
           margins: { top: 120, bottom: 120, left: 120, right: 120 },
         })
@@ -435,7 +539,7 @@ export async function exportLessonPlanToDocx(
               children: [new TextRun({ text: 'Giáo dục hòa nhập (HSKT)', bold: true, color: 'B8681A', size: 18 })],
               spacing: { after: 80 },
             }),
-            ...textBlockToParagraphs(block.kt, equations, images),
+            ...textBlockToParagraphs(block.kt, equations, images, tables),
           ],
           margins: { top: 120, bottom: 120, left: 120, right: 120 },
         })

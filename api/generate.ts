@@ -153,6 +153,13 @@ KT>>>
    bản thay thế. Khi gặp placeholder này trong khối GOC, CHỈ được xuất lại ĐÚNG NGUYÊN VĂN
    placeholder trần đó (ví dụ [[IMG:IMG1]]) tại đúng vị trí xuất hiện — TUYỆT ĐỐI KHÔNG mô
    tả hình bằng lời, không đoán nội dung hình để viết thay, không xoá placeholder.
+6c. Placeholder dạng [[TBL:TBL1]], [[TBL:TBL2]]... trong ngữ liệu gốc LÀ MỘT BẢNG LỒNG bên
+   trong ô của bảng ngoài (ví dụ bảng xét dấu/bảng biến thiên đặt trong cột "SẢN PHẨM DỰ
+   KIẾN") — hệ thống sẽ tự dựng lại thành bảng thật khi hiển thị, bạn KHÔNG thấy được nội
+   dung bảng đó ở đây. Khi gặp placeholder này trong khối GOC, CHỈ được xuất lại ĐÚNG NGUYÊN
+   VĂN placeholder trần đó (ví dụ [[TBL:TBL1]]) tại đúng vị trí xuất hiện trong câu — TUYỆT
+   ĐỐI KHÔNG viết lại bảng đó bằng ký tự "|" hay bất kỳ hình thức nào khác, không đoán nội
+   dung bảng để mô tả thay, không xoá placeholder.
 7. Nếu trong khối SO hoặc KT bạn cần viết MỘT công thức toán MỚI (không có trong ngữ liệu
    gốc, ví dụ ví dụ minh hoạ trong một prompt gợi ý AI), được phép dùng LaTeX bọc trong
    $...$, nhưng CHỈ dùng cú pháp đơn giản: chữ/số, ^{...} (số mũ), _{...} (chỉ số dưới),

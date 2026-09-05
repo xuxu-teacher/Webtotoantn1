@@ -3,7 +3,7 @@ import JSZip from 'jszip';
 import { XMLParser } from 'fast-xml-parser';
 import { parseOMathToNode } from './ommlAst';
 import { mathNodeToMathml } from './mathToMathml';
-import type { EquationEntry, ImageEntry, ParsedDocument } from '../types';
+import type { EquationEntry, ImageEntry, TableEntry, ParsedDocument } from '../types';
 
 type XNode = Record<string, any>;
 
@@ -36,8 +36,10 @@ function findDeep(node: XNode, tag: string, results: XNode[] = []): XNode[] {
 interface WalkCtx {
   equations: Record<string, EquationEntry>;
   images: Record<string, ImageEntry>;
+  tables: Record<string, TableEntry>;
   counter: { n: number };
   imgCounter: { n: number };
+  tblCounter: { n: number };
   /** Tiêu đề gợi ý, lấy từ đoạn văn đầu tiên có style Title/Heading (nếu có). */
   headingTitle?: string;
 }
@@ -168,41 +170,65 @@ function walk(node: XNode, ctx: WalkCtx): string {
  * "HOẠT ĐỘNG CỦA GV VÀ HS" | "SẢN PHẨM DỰ KIẾN" | "NLS"). Trước đây app chỉ đọc
  * text tuần tự nên một bảng 3 cột bị "làm phẳng" thành các đoạn văn nối tiếp,
  * MẤT HẲN ranh giới cột — đây là lý do "file gốc 3 cột mà lên web chỉ còn 1
- * cột". Hàm này dựng lại bảng gốc thành cú pháp bảng Markdown (| ô 1 | ô 2 |),
- * giữ đúng số cột/số dòng, để:
+ * cột". renderTableAsMarkdown() dựng lại bảng gốc thành cú pháp bảng Markdown
+ * (| ô 1 | ô 2 |), giữ đúng số cột/số dòng, để:
  *   1) Gửi cho AI dưới dạng văn bản mà AI hiểu đúng đây là một bảng nhiều cột
  *      và phải TÁI TẠO Y NGUYÊN (xem quy tắc trong api/generate.ts).
  *   2) Được nhận diện lại ở markdownTable.ts và render/xuất thành bảng thật
  *      (không phải đoạn văn) cả ở bản xem trước lẫn file Word xuất ra.
+ *
+ * Trả về nội dung THÔ (chưa escape/làm phẳng) của một ô bảng: nối text các
+ * đoạn văn bình thường, nhưng nếu ô chứa BẢNG LỒNG (w:tbl) — ví dụ một bảng
+ * biến thiên đặt trong ô "SẢN PHẨM DỰ KIẾN" — thì KHÔNG đệ quy nó thành cú
+ * pháp Markdown "| |" nhiều dòng như trước đây, vì bảng nhiều dòng đó không
+ * thể nhét vừa vào MỘT dòng của bảng Markdown ngoài (bảng ngoài sẽ escape hết
+ * dấu "|" và gộp hết dấu xuống dòng thành dấu cách, biến cả bảng lồng thành
+ * một mớ ký tự "\| ... \|" vô nghĩa — đúng lỗi đã gặp). Thay vào đó, trích
+ * bảng lồng thành dữ liệu riêng (ctx.tables) và chỉ để lại một placeholder
+ * [[TBL:xxx]] tại đúng vị trí, giống cách công thức/hình vẽ dùng placeholder.
  */
-function renderTableAsMarkdown(tblNode: XNode, ctx: WalkCtx): string {
-  const rows = childrenOf(tblNode).filter((c) => tagOf(c) === 'w:tr');
-  if (rows.length === 0) return '';
+function cellRawText(tc: XNode, ctx: WalkCtx): string {
+  const parts = childrenOf(tc).map((c) => {
+    if (tagOf(c) === 'w:tbl') {
+      const id = `TBL${++ctx.tblCounter.n}`;
+      ctx.tables[id] = { id, rows: extractTableRows(c, ctx) };
+      return `[[TBL:${id}]]`;
+    }
+    return walk(c, ctx);
+  });
+  return parts
+    .join('')
+    .replace(/\n+/g, ' ') // Markdown table: mỗi ô chỉ được nằm trên 1 dòng
+    .replace(/\|/g, '\\|') // tránh dấu | trong nội dung phá vỡ cú pháp bảng
+    .trim();
+}
 
+/** Trích một bảng (kể cả bảng lồng bên trong) thành mảng dòng/cột thô, đệm
+ * cho đủ số cột bằng dòng dài nhất — dùng cho cả bảng ngoài (renderTableAsMarkdown)
+ * và bảng lồng (lưu vào ctx.tables, xem cellRawText ở trên). */
+function extractTableRows(tblNode: XNode, ctx: WalkCtx): string[][] {
+  const rows = childrenOf(tblNode).filter((c) => tagOf(c) === 'w:tr');
   const rowCells: string[][] = rows.map((tr) => {
     const cells = childrenOf(tr).filter((c) => tagOf(c) === 'w:tc');
-    return cells.map((tc) => {
-      const raw = childrenOf(tc)
-        .map((c) => walk(c, ctx))
-        .join('')
-        .replace(/\n+/g, ' ') // Markdown table: mỗi ô chỉ được nằm trên 1 dòng
-        .replace(/\|/g, '\\|') // tránh dấu | trong nội dung phá vỡ cú pháp bảng
-        .trim();
-      return raw;
-    });
+    return cells.map((tc) => cellRawText(tc, ctx));
   });
-
   const colCount = Math.max(...rowCells.map((r) => r.length), 1);
-  const pad = (r: string[]) => {
+  return rowCells.map((r) => {
     const padded = [...r];
     while (padded.length < colCount) padded.push('');
     return padded;
-  };
+  });
+}
+
+function renderTableAsMarkdown(tblNode: XNode, ctx: WalkCtx): string {
+  const rowCells = extractTableRows(tblNode, ctx);
+  if (rowCells.length === 0) return '';
+  const colCount = rowCells[0].length;
 
   const lines = [
-    `| ${pad(rowCells[0]).join(' | ')} |`,
+    `| ${rowCells[0].join(' | ')} |`,
     `| ${Array(colCount).fill('---').join(' | ')} |`,
-    ...rowCells.slice(1).map((r) => `| ${pad(r).join(' | ')} |`),
+    ...rowCells.slice(1).map((r) => `| ${r.join(' | ')} |`),
   ];
   return lines.join('\n') + '\n';
 }
@@ -326,6 +352,7 @@ export async function parseDocxFile(file: File): Promise<ParsedDocument> {
 
   const equations: Record<string, EquationEntry> = {};
   const images: Record<string, ImageEntry> = {};
+  const tables: Record<string, TableEntry> = {};
   let sourceTextWithPlaceholders = '';
   let headingTitle: string | undefined;
 
@@ -338,7 +365,7 @@ export async function parseDocxFile(file: File): Promise<ParsedDocument> {
 
     const documentNode = findDeep({ root: parsed } as any, 'w:document')[0];
     const bodyNode = documentNode && findDeep(documentNode, 'w:body')[0];
-    const ctx: WalkCtx = { equations, images, counter: { n: 0 }, imgCounter: { n: 0 } };
+    const ctx: WalkCtx = { equations, images, tables, counter: { n: 0 }, imgCounter: { n: 0 }, tblCounter: { n: 0 } };
 
     if (bodyNode) {
       sourceTextWithPlaceholders = childrenOf(bodyNode)
@@ -367,6 +394,7 @@ export async function parseDocxFile(file: File): Promise<ParsedDocument> {
     equationCount,
     nonConvertibleEquationCount,
     images,
+    tables,
     suggestedTitle,
   };
 }

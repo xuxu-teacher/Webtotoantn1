@@ -70,6 +70,16 @@ export interface ImageEntry {
   __relId?: string;
 }
 
+/** Một bảng lồng bên trong ô của bảng khác (ví dụ bảng biến thiên đặt trong ô
+ * "SẢN PHẨM DỰ KIẾN") — không thể biểu diễn bằng cú pháp Markdown "| |" một
+ * dòng như bảng thường (vì bảng lồng có nhiều dòng riêng), nên trích ra thành
+ * dữ liệu có cấu trúc, gắn placeholder [[TBL:xxx]] vào đúng vị trí, giống cách
+ * công thức/hình vẽ dùng placeholder [[EQ:...]]/[[IMG:...]]. */
+export interface TableEntry {
+  id: string; // ví dụ "TBL1"
+  rows: string[][]; // rows[0] = dòng đầu tiên của bảng lồng (không nhất thiết là tiêu đề)
+}
+
 export interface ParsedDocument {
   fileName: string;
   sourceTextWithPlaceholders: string; // văn bản gốc, công thức thay bằng [[EQ:CT1]]..., hình vẽ thay bằng [[IMG:IMG1]]...
@@ -78,6 +88,8 @@ export interface ParsedDocument {
   equationCount: number;
   nonConvertibleEquationCount: number;
   images: Record<string, ImageEntry>;
+  /** Bảng lồng trong ô của bảng khác (ví dụ bảng biến thiên) — xem TableEntry. */
+  tables: Record<string, TableEntry>;
   /** Tên bài học gợi ý (tự nhận diện từ heading trong file hoặc từ tên file) — chỉ là gợi ý, GV có thể sửa. */
   suggestedTitle?: string;
 }

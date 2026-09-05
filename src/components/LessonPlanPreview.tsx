@@ -5,12 +5,13 @@ import { parseKhbd } from '../utils/khbdParser';
 import { parseContentLines, trySectionMerge, type ContentLine } from '../utils/markdownTable';
 import { parseLatexSafe } from '../utils/latexToMathNode';
 import { mathNodeToMathml } from '../utils/mathToMathml';
-import type { EquationEntry, ImageEntry } from '../types';
+import type { EquationEntry, ImageEntry, TableEntry } from '../types';
 
 interface Props {
   markdown: string;
   equations: Record<string, EquationEntry>;
   images: Record<string, ImageEntry>;
+  tables: Record<string, TableEntry>;
   weekNumber?: string;
   durationPeriods?: number;
 }
@@ -50,16 +51,79 @@ function renderInline(
   });
 }
 
+/**
+ * Tách một dòng theo placeholder bảng LỒNG "[[TBL:xxx]]" (gắn từ docxParser.ts
+ * khi một ô của bảng gốc — ví dụ "SẢN PHẨM DỰ KIẾN" — chứa một bảng khác bên
+ * trong, như bảng biến thiên). Phần chữ thường đi qua renderInline như cũ;
+ * phần placeholder dựng thành MỘT BẢNG THẬT lồng bên trong, thay vì hiện
+ * nguyên văn "[[TBL:...]]" hay để lộ cú pháp bảng bị escape hỏng ("\| ... \|").
+ */
+function renderLineParts(
+  text: string,
+  keyPrefix: string,
+  equations: Record<string, EquationEntry>,
+  images: Record<string, ImageEntry>,
+  tables: Record<string, TableEntry>
+) {
+  const segments = text.split(/(\[\[TBL:[^\]]+\]\])/g).filter((s) => s !== '');
+  return segments.map((seg, i) => {
+    const tblMatch = seg.match(/^\[\[TBL:([^\]]+)\]\]$/);
+    if (tblMatch) {
+      const entry = tables[tblMatch[1]];
+      if (entry && entry.rows.length > 0) {
+        return renderNestedTable(entry.rows, `${keyPrefix}-tbl${i}`, equations, images, tables);
+      }
+      return (
+        <span key={`${keyPrefix}-tbl${i}`} className="math math--missing" title="Không trích được bảng này từ file gốc">
+          [bảng #{tblMatch[1]} — không trích được, xem file gốc]
+        </span>
+      );
+    }
+    return <Fragment key={`${keyPrefix}-t${i}`}>{renderInline(seg, `${keyPrefix}-t${i}`, equations, images)}</Fragment>;
+  });
+}
+
+function renderNestedTable(
+  rows: string[][],
+  keyPrefix: string,
+  equations: Record<string, EquationEntry>,
+  images: Record<string, ImageEntry>,
+  tables: Record<string, TableEntry>
+) {
+  const [header, ...body] = rows;
+  return (
+    <table className="khbd-table khbd-table--nested" key={keyPrefix}>
+      <thead>
+        <tr>
+          {header.map((cell, ci) => (
+            <th key={`${keyPrefix}-h${ci}`}>{renderLineParts(cell, `${keyPrefix}-h${ci}`, equations, images, tables)}</th>
+          ))}
+        </tr>
+      </thead>
+      <tbody>
+        {body.map((row, ri) => (
+          <tr key={`${keyPrefix}-r${ri}`}>
+            {row.map((cell, ci) => (
+              <td key={`${keyPrefix}-r${ri}c${ci}`}>{renderLineParts(cell, `${keyPrefix}-r${ri}c${ci}`, equations, images, tables)}</td>
+            ))}
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
 function renderContentLines(
   items: ContentLine[],
   keyPrefix: string,
   equations: Record<string, EquationEntry>,
-  images: Record<string, ImageEntry>
+  images: Record<string, ImageEntry>,
+  tables: Record<string, TableEntry>
 ) {
   return items.map((item, idx) => {
     const key = `${keyPrefix}-${idx}`;
     if (item.type === 'bullet') {
-      return <li key={key}>{renderInline(item.text, key, equations, images)}</li>;
+      return <li key={key}>{renderLineParts(item.text, key, equations, images, tables)}</li>;
     }
     if (item.type === 'table') {
       const [header, ...body] = item.rows;
@@ -68,7 +132,7 @@ function renderContentLines(
           <thead>
             <tr>
               {header.map((cell, ci) => (
-                <th key={`${key}-h${ci}`}>{renderInline(cell, `${key}-h${ci}`, equations, images)}</th>
+                <th key={`${key}-h${ci}`}>{renderLineParts(cell, `${key}-h${ci}`, equations, images, tables)}</th>
               ))}
             </tr>
           </thead>
@@ -76,13 +140,16 @@ function renderContentLines(
             {body.map((row, ri) => (
               <tr key={`${key}-r${ri}`}>
                 {row.map((cell, ci) => (
-                  <td key={`${key}-r${ri}c${ci}`}>{renderInline(cell, `${key}-r${ri}c${ci}`, equations, images)}</td>
+                  <td key={`${key}-r${ri}c${ci}`}>{renderLineParts(cell, `${key}-r${ri}c${ci}`, equations, images, tables)}</td>
                 ))}
               </tr>
             ))}
           </tbody>
         </table>
       );
+    }
+    if (/\[\[TBL:/.test(item.text)) {
+      return <Fragment key={key}>{renderLineParts(item.text, key, equations, images, tables)}</Fragment>;
     }
     return <p key={key}>{renderInline(item.text, key, equations, images)}</p>;
   });
@@ -92,9 +159,10 @@ function renderMultiline(
   text: string,
   keyPrefix: string,
   equations: Record<string, EquationEntry>,
-  images: Record<string, ImageEntry>
+  images: Record<string, ImageEntry>,
+  tables: Record<string, TableEntry>
 ) {
-  return renderContentLines(parseContentLines(text), keyPrefix, equations, images);
+  return renderContentLines(parseContentLines(text), keyPrefix, equations, images, tables);
 }
 
 /**
@@ -107,7 +175,8 @@ function renderMergedTable(
   merged: NonNullable<ReturnType<typeof trySectionMerge>>,
   keyPrefix: string,
   equations: Record<string, EquationEntry>,
-  images: Record<string, ImageEntry>
+  images: Record<string, ImageEntry>,
+  tables: Record<string, TableEntry>
 ) {
   const { headers, rows, soText, ktText } = merged;
   return (
@@ -115,7 +184,7 @@ function renderMergedTable(
       <thead>
         <tr>
           {headers.map((h, ci) => (
-            <th key={`${keyPrefix}-h${ci}`}>{renderInline(h, `${keyPrefix}-h${ci}`, equations, images)}</th>
+            <th key={`${keyPrefix}-h${ci}`}>{renderLineParts(h, `${keyPrefix}-h${ci}`, equations, images, tables)}</th>
           ))}
           {soText !== null && <th className="khbd-table__so-th">Năng lực số</th>}
           {ktText !== null && <th className="khbd-table__kt-th">Giáo dục hòa nhập (HSKT)</th>}
@@ -125,16 +194,16 @@ function renderMergedTable(
         {rows.map((row, ri) => (
           <tr key={`${keyPrefix}-r${ri}`}>
             {row.map((cell, ci) => (
-              <td key={`${keyPrefix}-r${ri}c${ci}`}>{renderInline(cell, `${keyPrefix}-r${ri}c${ci}`, equations, images)}</td>
+              <td key={`${keyPrefix}-r${ri}c${ci}`}>{renderLineParts(cell, `${keyPrefix}-r${ri}c${ci}`, equations, images, tables)}</td>
             ))}
             {soText !== null && ri === 0 && (
               <td className="khbd-table__so-td" rowSpan={rows.length}>
-                {renderMultiline(soText, `${keyPrefix}-so`, equations, images)}
+                {renderMultiline(soText, `${keyPrefix}-so`, equations, images, tables)}
               </td>
             )}
             {ktText !== null && ri === 0 && (
               <td className="khbd-table__kt-td" rowSpan={rows.length}>
-                {renderMultiline(ktText, `${keyPrefix}-kt`, equations, images)}
+                {renderMultiline(ktText, `${keyPrefix}-kt`, equations, images, tables)}
               </td>
             )}
           </tr>
@@ -144,7 +213,7 @@ function renderMergedTable(
   );
 }
 
-export default function LessonPlanPreview({ markdown, equations, images, weekNumber, durationPeriods }: Props) {
+export default function LessonPlanPreview({ markdown, equations, images, tables, weekNumber, durationPeriods }: Props) {
   const blocks = parseKhbd(markdown);
   const firstHeadingIdx = blocks.findIndex((b) => b.type === 'heading');
   const subtitleParts = [
@@ -172,7 +241,7 @@ export default function LessonPlanPreview({ markdown, equations, images, weekNum
           // nếu không, một bảng Markdown lỡ nằm ngoài khối <<<GOC>>> (hoặc bị
           // AI "làm phẳng" mất dấu xuống dòng) sẽ hiện thành đoạn văn có dấu
           // "|" lộ liễu thay vì bảng thật, giống lỗi đã gặp trong bản xuất Word.
-          return <Fragment key={idx}>{renderMultiline(block.text, String(idx), equations, images)}</Fragment>;
+          return <Fragment key={idx}>{renderMultiline(block.text, String(idx), equations, images, tables)}</Fragment>;
         }
 
         const hasSo = block.so.trim().length > 0;
@@ -182,8 +251,8 @@ export default function LessonPlanPreview({ markdown, equations, images, weekNum
         if (merged) {
           return (
             <div className="khbd-merged" key={idx}>
-              {merged.beforeTable.length > 0 && renderContentLines(merged.beforeTable, `${idx}-before`, equations, images)}
-              {renderMergedTable(merged, `${idx}`, equations, images)}
+              {merged.beforeTable.length > 0 && renderContentLines(merged.beforeTable, `${idx}-before`, equations, images, tables)}
+              {renderMergedTable(merged, `${idx}`, equations, images, tables)}
             </div>
           );
         }
@@ -193,18 +262,18 @@ export default function LessonPlanPreview({ markdown, equations, images, weekNum
         return (
           <div className={`khbd-row khbd-row--cols-${colCount}`} key={idx}>
             <div className="khbd-col khbd-col--goc">
-              {renderMultiline(block.goc, `${idx}-goc`, equations, images)}
+              {renderMultiline(block.goc, `${idx}-goc`, equations, images, tables)}
             </div>
             {hasSo && (
               <div className="khbd-col khbd-col--so">
                 <p className="khbd-col__label khbd-col__label--so">Năng lực số</p>
-                {renderMultiline(block.so, `${idx}-so`, equations, images)}
+                {renderMultiline(block.so, `${idx}-so`, equations, images, tables)}
               </div>
             )}
             {hasKt && (
               <div className="khbd-col khbd-col--kt">
                 <p className="khbd-col__label khbd-col__label--kt">Giáo dục hòa nhập (HSKT)</p>
-                {renderMultiline(block.kt, `${idx}-kt`, equations, images)}
+                {renderMultiline(block.kt, `${idx}-kt`, equations, images, tables)}
               </div>
             )}
           </div>

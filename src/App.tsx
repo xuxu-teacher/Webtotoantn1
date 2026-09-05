@@ -286,6 +286,7 @@ export default function App() {
                   markdown={result.markdown}
                   equations={parsedDoc?.equations || {}}
                   images={parsedDoc?.images || {}}
+                  tables={parsedDoc?.tables || {}}
                   weekNumber={weekNumber}
                   durationPeriods={durationPeriods}
                 />
@@ -297,6 +298,7 @@ export default function App() {
                     result.markdown,
                     parsedDoc?.equations || {},
                     parsedDoc?.images || {},
+                    parsedDoc?.tables || {},
                     `KHBD_${lessonTitle || 'bai-day'}`,
                     headerNote,
                     weekNumber,
