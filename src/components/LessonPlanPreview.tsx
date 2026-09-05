@@ -167,7 +167,12 @@ export default function LessonPlanPreview({ markdown, equations, images, weekNum
           );
         }
         if (block.type === 'text') {
-          return <p key={idx}>{renderInline(block.text, String(idx), equations, images)}</p>;
+          // Dùng chung pipeline nhận diện bảng/gạch đầu dòng (renderMultiline
+          // -> parseContentLines) thay vì luôn hiện thành MỘT đoạn văn thô —
+          // nếu không, một bảng Markdown lỡ nằm ngoài khối <<<GOC>>> (hoặc bị
+          // AI "làm phẳng" mất dấu xuống dòng) sẽ hiện thành đoạn văn có dấu
+          // "|" lộ liễu thay vì bảng thật, giống lỗi đã gặp trong bản xuất Word.
+          return <Fragment key={idx}>{renderMultiline(block.text, String(idx), equations, images)}</Fragment>;
         }
 
         const hasSo = block.so.trim().length > 0;

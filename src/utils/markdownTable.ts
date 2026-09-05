@@ -3,6 +3,68 @@ export type ContentLine =
   | { type: 'bullet'; text: string }
   | { type: 'para'; text: string };
 
+/**
+ * Sửa bảng Markdown bị AI "làm phẳng" thành một dòng liền khi sao chép ngữ
+ * liệu gốc — thường xảy ra với bảng có ô quá dài (ví dụ cột "HOẠT ĐỘNG CỦA GV
+ * VÀ HS" nhiều bước): thay vì giữ 3+ dòng riêng "tiêu đề" / "|---|---|" / "dữ
+ * liệu", mô hình đôi khi thay hết dấu xuống dòng bằng dấu cách, khiến cả bảng
+ * hiện ra thành một đoạn văn có dấu "|" lộ liễu thay vì một bảng thật.
+ *
+ * Vì mọi dấu "|" thật NẰM TRONG nội dung ô đã được escape thành "\|" ngay từ
+ * lúc trích xuất (xem docxParser.renderTableAsMarkdown), nên MỌI dấu "|" trần
+ * còn sót lại chắc chắn là ranh giới cột/dòng của bảng — dựa vào đó, hàm này
+ * tìm dòng phân cách kiểu "|---|---|" Ở BẤT KỲ ĐÂU trong văn bản (không cần
+ * đứng riêng một dòng) để suy ra số cột, rồi chèn lại dấu xuống dòng đúng chỗ
+ * trước khi giao cho vòng lặp phân tích theo dòng bên dưới xử lý như bình
+ * thường. Nếu không tìm được dòng tiêu đề hợp lệ ngay trước dòng phân cách,
+ * giữ nguyên văn bản (an toàn hơn là đoán sai và làm hỏng nội dung).
+ */
+function repairFlattenedTables(text: string): string {
+  const sepRe = /\|(?:\s*:?-{2,}:?\s*\|){1,}/g;
+  let result = '';
+  let cursor = 0;
+  let m: RegExpExecArray | null;
+
+  while ((m = sepRe.exec(text))) {
+    const sepStart = m.index;
+    const sepEnd = sepRe.lastIndex;
+    const colCount = (m[0].match(/-{2,}/g) || []).length;
+    if (colCount < 1) {
+      result += text.slice(cursor, sepEnd);
+      cursor = sepEnd;
+      continue;
+    }
+
+    const before = text.slice(cursor, sepStart);
+    const headerRe = new RegExp('\\|(?:[^|\\n]*\\|){' + colCount + '}\\s*$');
+    const headerMatch = before.match(headerRe);
+    if (!headerMatch || headerMatch.index === undefined) {
+      // Không tìm được dòng tiêu đề hợp lệ ngay trước -> chắc không phải bảng
+      // bị làm phẳng (có thể chỉ là dấu "-" trùng hợp) -> giữ nguyên.
+      result += text.slice(cursor, sepEnd);
+      cursor = sepEnd;
+      continue;
+    }
+
+    result += before.slice(0, headerMatch.index);
+    result += '\n' + before.slice(headerMatch.index).trimEnd() + '\n' + m[0].trim();
+
+    // Đọc tiếp các dòng dữ liệu ngay sau dòng phân cách, mỗi dòng đúng colCount ô.
+    let dataCursor = sepEnd;
+    const rowRe = new RegExp('^\\s*(\\|(?:[^|\\n]*\\|){' + colCount + '})');
+    while (true) {
+      const rowMatch = rowRe.exec(text.slice(dataCursor));
+      if (!rowMatch) break;
+      result += '\n' + rowMatch[1].trim();
+      dataCursor += rowMatch[0].length;
+    }
+    result += '\n';
+    cursor = dataCursor;
+  }
+  result += text.slice(cursor);
+  return result;
+}
+
 /** Tách một dòng bảng Markdown "| a | b |" thành mảng ô, có bỏ escape "\|". */
 function splitTableRow(line: string): string[] {
   let s = line.trim();
@@ -41,7 +103,7 @@ function isSeparatorRow(line: string): boolean {
  * trong file gốc không bị "làm phẳng" thành đoạn văn nối tiếp.
  */
 export function parseContentLines(text: string): ContentLine[] {
-  const lines = text.split('\n');
+  const lines = repairFlattenedTables(text).split('\n');
   const result: ContentLine[] = [];
   let i = 0;
 

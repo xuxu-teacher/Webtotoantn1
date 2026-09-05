@@ -96,6 +96,36 @@ KT>>>
    luyện, cách HS tự thao tác/kiểm tra bằng công cụ số (không lặp lại y hệt việc GV đã làm).
    Khi viết, nêu cụ thể công cụ số/AI học sinh hoặc giáo viên có thể dùng thêm và cách dùng,
    gắn với đúng nội dung của mục đó (không viết chung chung).
+
+   ĐỊNH DẠNG BẮT BUỘC CỦA KHỐI SO — mỗi ý phải BẮT ĐẦU bằng MÃ năng lực số tham chiếu
+   đúng Khung năng lực số ban hành theo Thông tư 02/2025/TT-BGDĐT (Bộ GDĐT), theo cấu
+   trúc "[miền].[năng lực thành phần].NC1[chỉ báo]" — ví dụ "5.3.NC1a", "1.1.NC1b" — rồi
+   mới đến mô tả ngắn gọn, gắn với đúng nội dung của mục. Dùng mức "NC1" (Nâng cao, bậc 5)
+   vì đây là chương trình THPT. Chỉ báo (a, b, c...) đặt tuỳ theo khía cạnh cụ thể của kỹ
+   năng đang mô tả trong năng lực thành phần đó — không bắt buộc phải là "a" cho mọi mã.
+   Chọn ĐÚNG MỘT năng lực thành phần trong bảng dưới đây sát nhất với công cụ/kỹ năng số
+   sẽ nêu (không bịa mã ngoài danh sách, không dùng miền/số thành phần không có trong bảng):
+
+   1. KHAI THÁC DỮ LIỆU VÀ THÔNG TIN: 1.1 Duyệt, tìm kiếm và lọc dữ liệu/thông tin/nội
+      dung số | 1.2 Đánh giá dữ liệu, thông tin và nội dung số | 1.3 Quản lý dữ liệu,
+      thông tin và nội dung số.
+   2. GIAO TIẾP VÀ HỢP TÁC TRONG MÔI TRƯỜNG SỐ: 2.1 Tương tác thông qua công nghệ số |
+      2.2 Chia sẻ thông tin/nội dung qua công nghệ số | 2.3 Sử dụng công nghệ số để thực
+      hiện trách nhiệm công dân | 2.4 Hợp tác thông qua công nghệ số | 2.5 Thực hiện quy
+      tắc ứng xử trên mạng | 2.6 Quản lý danh tính số.
+   3. SÁNG TẠO NỘI DUNG SỐ: 3.1 Phát triển nội dung số | 3.2 Tích hợp và tạo lập lại nội
+      dung số | 3.3 Thực thi bản quyền và giấy phép | 3.4 Lập trình.
+   4. AN TOÀN: 4.1 Bảo vệ thiết bị | 4.2 Bảo vệ dữ liệu cá nhân và quyền riêng tư | 4.3 Bảo
+      vệ sức khỏe và an sinh số | 4.4 Bảo vệ môi trường.
+   5. GIẢI QUYẾT VẤN ĐỀ: 5.1 Giải quyết các vấn đề kỹ thuật | 5.2 Xác định nhu cầu và giải
+      pháp công nghệ (chọn, dùng công cụ số phù hợp để giải quyết nhu cầu) | 5.3 Sử dụng
+      sáng tạo công nghệ số (dùng công cụ số để tạo kiến thức, đổi mới cách giải quyết vấn
+      đề) | 5.4 Xác định các vấn đề cần cải thiện về năng lực số.
+   6. ỨNG DỤNG TRÍ TUỆ NHÂN TẠO: 6.1 Hiểu biết về AI | 6.2 Sử dụng AI có đạo đức và trách
+      nhiệm | 6.3 Đánh giá các công cụ AI.
+
+   Ví dụ đúng định dạng: "5.3.NC1b: HS sử dụng GeoGebra để dựng hình và kiểm chứng tính
+   chất hình học của bài toán." — mã trước, mô tả cụ thể sau, một dòng cho mỗi ý.
 5. KHỐI KT (giáo dục hòa nhập) — CHỈ viết khối này nếu lớp CÓ học sinh khuyết tật (xem danh
    sách loại khuyết tật trong phần THÔNG TIN BÀI DẠY bên dưới). Nếu lớp KHÔNG có HSKT (danh
    sách rỗng), TUYỆT ĐỐI không viết khối KT ở bất kỳ mục nào trong toàn bộ bài. Nếu lớp CÓ

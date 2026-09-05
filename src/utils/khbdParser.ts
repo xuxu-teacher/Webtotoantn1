@@ -61,8 +61,23 @@ export function parseKhbd(markdown: string): KhbdBlock[] {
       }
       blocks.push({ type: 'section', goc: wrapBareLatex(goc), so: wrapBareLatex(so), kt: wrapBareLatex(kt) });
     } else if (trimmed) {
-      blocks.push({ type: 'text', text: wrapBareLatex(trimmed) });
+      // Gộp các dòng liên tiếp (không phải heading/<<<GOC) thành MỘT khối
+      // 'text' duy nhất, giữ nguyên dấu xuống dòng giữa chúng — thay vì tách
+      // mỗi dòng thành một khối riêng như trước đây. Quan trọng với trường
+      // hợp AI lỡ viết một bảng Markdown (nhiều dòng "|...|") nằm NGOÀI khối
+      // <<<GOC>>>: nếu tách theo từng dòng, mỗi dòng bảng biến thành một khối
+      // 'text' riêng lẻ, khiến parseContentLines (ở nơi hiển thị/xuất) không
+      // còn thấy đủ 2 dòng liên tiếp (tiêu đề + "|---|---|") để nhận diện
+      // đúng là một bảng — bảng bị "vỡ" thành các đoạn văn rời rạc.
+      const collected: string[] = [lines[i]];
       i++;
+      while (i < lines.length) {
+        const next = lines[i].trim();
+        if (!next || next.startsWith('#') || next === '<<<GOC') break;
+        collected.push(lines[i]);
+        i++;
+      }
+      blocks.push({ type: 'text', text: wrapBareLatex(collected.join('\n').trim()) });
     } else {
       i++;
     }

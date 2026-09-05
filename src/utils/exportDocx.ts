@@ -382,7 +382,12 @@ export async function exportLessonPlanToDocx(
     }
 
     if (block.type === 'text') {
-      children.push(new Paragraph({ children: inlineToRuns(block.text, equations, images) }));
+      // Dùng chung pipeline nhận diện bảng/gạch đầu dòng (parseContentLines)
+      // thay vì luôn in thành MỘT đoạn văn thô — nếu không, một bảng Markdown
+      // lỡ nằm ngoài khối <<<GOC>>> (hoặc bị AI "làm phẳng" mất dấu xuống
+      // dòng — xem repairFlattenedTables) sẽ hiện ra thành đoạn văn có dấu
+      // "|" lộ liễu thay vì bảng thật.
+      children.push(...contentLinesToParagraphs(parseContentLines(block.text), equations, images));
       continue;
     }
 

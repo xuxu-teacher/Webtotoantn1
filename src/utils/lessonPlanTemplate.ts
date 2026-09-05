@@ -62,6 +62,16 @@ KT>>>
    luyện, cách HS tự thao tác/kiểm tra bằng công cụ số (không lặp lại y hệt việc GV đã làm).
    Khi viết, nêu cụ thể công cụ số/AI học sinh hoặc giáo viên có thể dùng thêm và cách dùng,
    gắn với đúng nội dung của mục đó (không viết chung chung).
+
+   ĐỊNH DẠNG BẮT BUỘC CỦA KHỐI SO — mỗi ý phải BẮT ĐẦU bằng MÃ năng lực số tham chiếu
+   đúng Khung năng lực số ban hành theo Thông tư 02/2025/TT-BGDĐT (Bộ GDĐT), theo cấu
+   trúc "[miền].[năng lực thành phần].NC1[chỉ báo]" — ví dụ "5.3.NC1a", "1.1.NC1b" — rồi
+   mới đến mô tả ngắn gọn. Dùng mức "NC1" (Nâng cao, bậc 5) vì đây là chương trình THPT.
+   Chọn ĐÚNG MỘT năng lực thành phần trong 24 năng lực thuộc 6 miền của Khung (không bịa
+   mã ngoài danh sách chính thức) — xem đầy đủ 6 miền/24 năng lực thành phần trong
+   buildSystemPrompt() ở api/generate.ts (giữ đồng bộ khi sửa).
+   Ví dụ đúng định dạng: "5.3.NC1b: HS sử dụng GeoGebra để dựng hình và kiểm chứng tính
+   chất hình học của bài toán." — mã trước, mô tả cụ thể sau, một dòng cho mỗi ý.
 5. KHỐI KT (giáo dục hòa nhập) — CHỈ viết khối này nếu lớp CÓ học sinh khuyết tật (xem danh
    sách loại khuyết tật trong phần THÔNG TIN BÀI DẠY bên dưới). Nếu lớp KHÔNG có HSKT (danh
    sách rỗng), TUYỆT ĐỐI không viết khối KT ở bất kỳ mục nào trong toàn bộ bài. Nếu lớp CÓ
