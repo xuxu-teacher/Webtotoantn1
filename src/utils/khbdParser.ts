@@ -5,8 +5,8 @@ export type KhbdBlock =
   | { type: 'section'; goc: string; so: string; kt: string }
   | { type: 'text'; text: string };
 
-const MARKERS = ['<<<GOC', 'GOC>>>', '<<<SO', 'SO>>>', '<<<KT', 'KT>>>'];
-const MARKER_RE = /<<<GOC|GOC>>>|<<<SO|SO>>>|<<<KT|KT>>>/g;
+const MARKERS = ['<<<GOC', 'GOC>>>', '<<<SO', 'SO>>>', '<<<KT', 'KT>>>', '>>>'];
+const MARKER_RE = /<<<GOC|GOC>>>|<<<SO|SO>>>|<<<KT|KT>>>|>>>/g;
 
 /**
  * Đảm bảo mỗi marker <<<GOC/GOC>>>/<<<SO/SO>>>/<<<KT/KT>>> luôn nằm TRÊN MỘT
@@ -16,7 +16,8 @@ const MARKER_RE = /<<<GOC|GOC>>>|<<<SO|SO>>>|<<<KT|KT>>>/g;
  * marker). Nếu không chuẩn hoá, bộ phân tích bên dưới (dựa vào so khớp CẢ
  * DÒNG đúng bằng marker) sẽ không nhận ra marker đóng/mở, khiến cả khối SO/KT
  * bị nuốt lẫn vào GOC và marker hiện ra thành chữ thô "<<<SO..." ngay trong
- * bài — lỗi nặng hơn nhiều so với chỉ mất định dạng bảng.
+ * bài — lỗi nặng hơn nhiều so với chỉ mất định dạng bảng. Marker "\>>>" trơn
+ * (không có tiền tố GOC/SO/KT) cũng được nhận diện riêng — xem collectUntil.
  */
 function normalizeMarkers(markdown: string): string {
   return markdown.replace(MARKER_RE, (m) => `\n${m}\n`);
@@ -36,13 +37,20 @@ export function parseKhbd(markdown: string): KhbdBlock[] {
   const blocks: KhbdBlock[] = [];
   let i = 0;
 
+  // Lỗi THỰC TẾ đã gặp: AI đóng khối SO/KT bằng ">>>" TRƠN (thiếu tiền tố
+  // "SO"/"KT") thay vì "SO>>>"/"KT>>>" đúng chuẩn. Vì collectUntil trước đây
+  // chỉ dừng khi khớp CHÍNH XÁC endMarker, nó không bao giờ tìm thấy ">>>"
+  // trơn và cứ "nuốt" toàn bộ phần còn lại của bài (kể cả heading, <<<GOC của
+  // mục kế tiếp...) vào nhầm khối SO/KT. Nay chấp nhận CẢ ">>>" trơn như một
+  // cách đóng hợp lệ (rộng lượng hơn, nhưng an toàn vì ">>>" gần như không
+  // bao giờ là nội dung thật của một giáo án Toán).
   function collectUntil(endMarker: string): string {
     const collected: string[] = [];
-    while (i < lines.length && lines[i].trim() !== endMarker) {
+    while (i < lines.length && lines[i].trim() !== endMarker && lines[i].trim() !== '>>>') {
       collected.push(lines[i]);
       i++;
     }
-    i++; // bỏ qua chính dòng endMarker
+    i++; // bỏ qua chính dòng endMarker (hoặc ">>>" trơn nếu AI viết thiếu tiền tố)
     return collected.join('\n').trim();
   }
 
