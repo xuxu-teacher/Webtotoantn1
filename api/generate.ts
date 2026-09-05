@@ -87,6 +87,12 @@ KT>>>
    cách "|---|---|" ngay sau dòng tiêu đề), khối GOC PHẢI CHÉP LẠI NGUYÊN VẸN bảng đó, ĐÚNG
    Y HỆT cú pháp Markdown gốc (đủ số cột, đủ số dòng, đúng nội dung từng ô, không được bỏ
    cột, không gộp cột, không chuyển bảng thành đoạn văn xuôi).
+   NGƯỢC LẠI — NẾU ngữ liệu gốc của mục này KHÔNG có sẵn bảng dạng "|...|" nào (chỉ là văn
+   bản/gạch đầu dòng bình thường, ví dụ một "Phiếu bài tập" hay danh sách câu hỏi) — TUYỆT
+   ĐỐI KHÔNG tự bịa ra bảng Markdown mới cho nội dung đó (không tự thêm dấu "|" để "đóng
+   khung" hay trình bày đẹp hơn). CHỈ dùng cú pháp bảng "|...|" khi và chỉ khi bảng đó THẬT
+   SỰ đã tồn tại sẵn trong ngữ liệu gốc dưới dạng "|...|" — nếu không chắc, hãy giữ nguyên
+   dạng văn bản/gạch đầu dòng như trong ngữ liệu gốc.
 4. KHỐI SO (năng lực số) — MẶC ĐỊNH LUÔN VIẾT khối này cho mỗi mục, TRỪ KHI ngữ liệu gốc
    của đúng mục đang xét đã có sẵn một PHẦN/CỘT RIÊNG trình bày ĐẦY ĐỦ về năng lực số cho
    đúng mục đó (ví dụ một cột bảng tên "NLS"/"Năng lực số", hoặc một đoạn ghi rõ mục

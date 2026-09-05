@@ -90,9 +90,28 @@ function splitTableRow(line: string): string[] {
   return cells;
 }
 
-/** Nhận diện dòng phân cách của bảng Markdown, kiểu "| --- | --- |" hoặc "|---|---|". */
+/** Nhận diện dòng phân cách của bảng Markdown, kiểu "| --- | --- |" (nhiều cột)
+ * hay "| --- |" (một cột) hoặc "|---|---|" không cách. */
 function isSeparatorRow(line: string): boolean {
-  return /^\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?$/.test(line.trim());
+  return /^(?=.*\|)\|?\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)*\|?$/.test(line.trim());
+}
+
+/**
+ * Dấu "|" trần còn sót lại trong một đoạn văn/gạch đầu dòng THƯỜNG (đã đi qua
+ * mà KHÔNG được nhận diện là bảng ở nhánh trên) chắc chắn là rác định dạng
+ * bảng Markdown bị AI viết hỏng cấu trúc (ví dụ AI tự ý bọc cả một "Phiếu bài
+ * tập" bằng "|" nhưng viết sai, để lại một dấu "|" mồ côi giữa câu và một dòng
+ * "| --- |" lẻ loi) — bỏ các dấu "|" trần này đi để không hiện chữ thô ra bài.
+ * Dấu "\|" (đã escape khi trích xuất bảng thật, xem docxParser.ts) LÀ ký tự
+ * "|" thật trong nội dung (ví dụ trị tuyệt đối) nên được giữ lại, chỉ bỏ dấu
+ * gạch chéo ngược phía trước.
+ */
+function stripStrayPipes(text: string): string {
+  const ESCAPED_PLACEHOLDER = '\u0000ESC_PIPE\u0000';
+  return text
+    .split('\\|').join(ESCAPED_PLACEHOLDER)
+    .split('|').join('')
+    .split(ESCAPED_PLACEHOLDER).join('|');
 }
 
 /**
@@ -125,13 +144,21 @@ export function parseContentLines(text: string): ContentLine[] {
       continue;
     }
 
-    if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
-      result.push({ type: 'bullet', text: trimmed.slice(2) });
+    // Dòng phân cách "| --- |" mồ côi (không đứng ngay sau một dòng tiêu đề
+    // hợp lệ nên không được ghép thành bảng ở nhánh trên) — chắc chắn là rác,
+    // bỏ hẳn dòng này thay vì hiện ra thành chữ thô.
+    if (isSeparatorRow(trimmed)) {
       i++;
       continue;
     }
 
-    result.push({ type: 'para', text: trimmed });
+    if (trimmed.startsWith('- ') || trimmed.startsWith('* ')) {
+      result.push({ type: 'bullet', text: stripStrayPipes(trimmed.slice(2)) });
+      i++;
+      continue;
+    }
+
+    result.push({ type: 'para', text: stripStrayPipes(trimmed) });
     i++;
   }
 
