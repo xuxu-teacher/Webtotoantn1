@@ -354,6 +354,18 @@ textarea:focus-visible {
   gap: 6px;
 }
 
+.columns-only-box {
+  background: #f2f7ee;
+  border: 1px solid #cfe3c2;
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-bottom: 16px;
+}
+
+.columns-only-box .btn {
+  margin-top: 8px;
+}
+
 .parse-summary__warning {
   color: var(--danger);
   font-weight: 500;

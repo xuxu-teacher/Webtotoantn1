@@ -44,6 +44,10 @@ SO>>>
 (nội dung điều chỉnh giáo dục hòa nhập cho mục này — chỉ xuất hiện khi đủ điều kiện, xem mục 4)
 KT>>>
 
+   MỖI khối PHẢI đóng bằng ĐÚNG marker ĐẦY ĐỦ ("GOC>>>"/"SO>>>"/"KT>>>") — TUYỆT ĐỐI KHÔNG
+   viết rút gọn thành ">>>" trơn (lỗi thực tế đã gặp, khiến phần bài phía sau bị đọc nhầm vào
+   khối đó).
+
 3. KHỐI GOC — QUAN TRỌNG NHẤT: phải là bản SAO Y NGUYÊN VĂN phần tương ứng trong "NGỮ LIỆU
    TRÍCH TỪ GIÁO ÁN GỐC" ở dưới — giữ đúng từng câu chữ, thứ tự, gạch đầu dòng, placeholder
    công thức [[EQ:CTx]] như bản gốc. TUYỆT ĐỐI KHÔNG diễn giải lại, không tóm tắt, không đổi
@@ -103,6 +107,8 @@ KT>>>
 6c. Placeholder dạng [[TBL:TBL1]]... LÀ MỘT BẢNG LỒNG (bảng biến thiên bằng bảng Word thật,
    không phải ảnh) trong ô của bảng ngoài — CHỈ xuất lại ĐÚNG NGUYÊN VĂN placeholder đó,
    TUYỆT ĐỐI KHÔNG viết lại bảng bằng "|", không mô tả thay, không xoá placeholder.
+6d. Placeholder [[BBTFAIL]] = bảng biến thiên vẽ tay bằng mũi tên nổi, không trích xuất được
+   — CHỈ xuất lại nguyên văn, TUYỆT ĐỐI KHÔNG tự đoán/viết số liệu thay, không xoá placeholder.
 7. Nếu trong khối SO hoặc KT bạn cần viết MỘT công thức toán MỚI (không có trong ngữ liệu
    gốc, ví dụ ví dụ minh hoạ trong một prompt gợi ý AI), được phép dùng LaTeX bọc trong
    $...$, nhưng CHỈ dùng cú pháp đơn giản: chữ/số, ^{...} (số mũ), _{...} (chỉ số dưới),

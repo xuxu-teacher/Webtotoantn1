@@ -4,9 +4,10 @@ import { parseDocxFile } from '../utils/docxParser';
 
 interface Props {
   onParsed: (doc: ParsedDocument) => void;
+  onFileSelected?: (file: File) => void;
 }
 
-export default function FileUpload({ onParsed }: Props) {
+export default function FileUpload({ onParsed, onFileSelected }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -23,6 +24,7 @@ export default function FileUpload({ onParsed }: Props) {
     setFileName(file.name);
     try {
       const parsed = await parseDocxFile(file);
+      onFileSelected?.(file);
       onParsed(parsed);
     } catch (err: any) {
       setError(`Không đọc được file: ${err.message || String(err)}`);

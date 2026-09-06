@@ -33,6 +33,35 @@ function findDeep(node: XNode, tag: string, results: XNode[] = []): XNode[] {
   return results;
 }
 
+/**
+ * Nhiều bảng biến thiên trong giáo án Việt Nam vẽ mũi tên tăng/giảm bằng
+ * SHAPE NỔI (neo tự do — <wp:anchor>, hoặc fallback VML <v:shape>/<v:line>),
+ * định vị TUYỆT ĐỐI và tách rời khỏi luồng chữ, thay vì dùng ký tự trong ô.
+ * Khi đó, số liệu (ví dụ giá trị cực trị) thường được đặt ở một ĐOẠN VĂN
+ * RIÊNG bên trong ô (để căn giữa dưới mũi tên), tách biệt với đoạn chứa các
+ * giá trị biên "-∞"/"+∞" — việc "làm phẳng" nhiều đoạn văn trong ô thành một
+ * dòng bảng Markdown (bắt buộc vì mỗi dòng bảng chỉ được nằm trên MỘT dòng)
+ * sẽ ghép chúng theo ĐÚNG THỨ TỰ XUẤT HIỆN TRONG XML — không nhất thiết đúng
+ * thứ tự đọc theo hình học (ví dụ giá trị cực trị đứng GIỮA về mặt hình học
+ * lại bị đẩy lên ĐẦU dòng vì đoạn văn chứa nó xuất hiện trước trong XML).
+ * KHÔNG có cách suy ra đúng vị trí từ text thuần khi mũi tên đã tách khỏi ô
+ * — nên bảng loại này được đánh dấu KHÔNG TRÍCH XUẤT thay vì liều trích ra dữ
+ * liệu có thể sai (xem chỗ gọi hàm này trong walk() và cellRawText()).
+ */
+function tableHasFloatingShape(node: XNode): boolean {
+  const tag = tagOf(node);
+  if (tag === 'wp:anchor' || tag === 'v:shape' || tag === 'v:line' || tag === 'v:shapetype') return true;
+  for (const c of childrenOf(node)) {
+    if (tableHasFloatingShape(c)) return true;
+  }
+  return false;
+}
+
+/** Placeholder trần chèn vào văn bản khi gặp bảng có shape nổi (xem
+ * tableHasFloatingShape) — không có ID riêng vì không có dữ liệu gì để tra
+ * cứu lại, chỉ là một cờ báo "chỗ này có bảng không trích xuất được". */
+const HANDDRAWN_TABLE_PLACEHOLDER = '[[BBTFAIL]]';
+
 interface WalkCtx {
   equations: Record<string, EquationEntry>;
   images: Record<string, ImageEntry>;
@@ -144,6 +173,7 @@ function walk(node: XNode, ctx: WalkCtx): string {
   if (tag === 'w:br' || tag === 'w:cr') return '\n';
 
   if (tag === 'w:tbl') {
+    if (tableHasFloatingShape(node)) return `${HANDDRAWN_TABLE_PLACEHOLDER}\n`;
     return renderTableAsMarkdown(node, ctx);
   }
 
@@ -190,6 +220,7 @@ function walk(node: XNode, ctx: WalkCtx): string {
 function cellRawText(tc: XNode, ctx: WalkCtx): string {
   const parts = childrenOf(tc).map((c) => {
     if (tagOf(c) === 'w:tbl') {
+      if (tableHasFloatingShape(c)) return HANDDRAWN_TABLE_PLACEHOLDER;
       const id = `TBL${++ctx.tblCounter.n}`;
       ctx.tables[id] = { id, rows: extractTableRows(c, ctx) };
       return `[[TBL:${id}]]`;

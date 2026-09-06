@@ -22,8 +22,19 @@ function renderInline(
   equations: Record<string, EquationEntry>,
   images: Record<string, ImageEntry>
 ) {
-  const parts = text.split(/(\[\[EQ:[^\]]+\]\]|\[\[IMG:[^\]]+\]\]|\$[^$]+\$)/g).filter((p) => p !== '');
+  const parts = text.split(/(\[\[EQ:[^\]]+\]\]|\[\[IMG:[^\]]+\]\]|\[\[BBTFAIL\]\]|\$[^$]+\$)/g).filter((p) => p !== '');
   return parts.map((part, i) => {
+    if (part === '[[BBTFAIL]]') {
+      return (
+        <span
+          key={`${key}-${i}`}
+          className="math math--missing"
+          title="Bảng biến thiên vẽ tay bằng hình mũi tên nổi trong Word — không trích xuất chính xác được"
+        >
+          [Bảng biến thiên vẽ tay bằng hình mũi tên nổi trong Word — không trích xuất chính xác được bằng văn bản (có thể sai thứ tự số liệu), vui lòng xem và chèn thủ công từ file gốc]
+        </span>
+      );
+    }
     const imgMatch = part.match(/^\[\[IMG:([^\]]+)\]\]$/);
     if (imgMatch) {
       const entry = images[imgMatch[1]];

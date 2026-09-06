@@ -8,10 +8,12 @@ import { generateLessonPlanSmart } from './utils/aiClient';
 import { exportLessonPlanToDocx } from './utils/exportDocx';
 import { buildAiSourceText } from './utils/aiSourceBuilder';
 import { convertEquationsBatch } from './utils/mathTypeConverterClient';
+import { runColumnsOnlyFlow } from './utils/columnsOnlyFlow';
 import type { DisabilityAccommodation, ParsedDocument } from './types';
 
 export default function App() {
   const [parsedDoc, setParsedDoc] = useState<ParsedDocument | null>(null);
+  const [rawFile, setRawFile] = useState<File | null>(null);
   const SUBJECT = 'Toán'; // App chỉ phục vụ Tổ Toán -> cố định, không cần ô nhập
   const [grade, setGrade] = useState('');
   const [lessonTitle, setLessonTitle] = useState('');
@@ -32,6 +34,10 @@ export default function App() {
   const [converting, setConverting] = useState(false);
   const [convertStatus, setConvertStatus] = useState<string | null>(null);
   const [bannerDismissed, setBannerDismissed] = useState(false);
+
+  const [columnsOnlyRunning, setColumnsOnlyRunning] = useState(false);
+  const [columnsOnlyError, setColumnsOnlyError] = useState<string | null>(null);
+  const [columnsOnlyDone, setColumnsOnlyDone] = useState<string | null>(null);
 
   useEffect(() => {
     fetch('/api/health')
@@ -79,6 +85,25 @@ export default function App() {
 
   function handleRetryConversion() {
     if (parsedDoc) runConversion(parsedDoc);
+  }
+
+  async function handleColumnsOnly() {
+    if (!rawFile) return;
+    setColumnsOnlyError(null);
+    setColumnsOnlyDone(null);
+    setColumnsOnlyRunning(true);
+    try {
+      const res = await runColumnsOnlyFlow(rawFile, { subject: SUBJECT, grade, accommodation });
+      setColumnsOnlyDone(
+        res.tablesUpdated === 0
+          ? `Cả ${res.tablesFound} bảng đều đã có đủ cột — không cần thêm gì, đã tải lại file y nguyên.`
+          : `Đã thêm cột cho ${res.tablesUpdated}/${res.tablesFound} bảng hoạt động — mọi nội dung/công thức/định dạng khác giữ nguyên 100% so với file gốc.`
+      );
+    } catch (err: any) {
+      setColumnsOnlyError(err.message || String(err));
+    } finally {
+      setColumnsOnlyRunning(false);
+    }
   }
 
   async function handleGenerate() {
@@ -189,7 +214,7 @@ export default function App() {
       <main className="page__grid">
         <section className="page__col">
           <h2 className="section-title">1. Giáo án gốc</h2>
-          <FileUpload onParsed={handleParsed} />
+          <FileUpload onParsed={handleParsed} onFileSelected={setRawFile} />
           {parsedDoc && (
             <div className="parse-summary">
               <p>
@@ -233,18 +258,37 @@ export default function App() {
           <h2 className="section-title">2. Học sinh khuyết tật (HSKT)</h2>
           <DisabilityAccommodationForm value={accommodation} onChange={setAccommodation} />
 
-          <h2 className="section-title">3. Soạn giáo án tích hợp năng lực số</h2>
+          <h2 className="section-title">3. Chọn cách soạn</h2>
+
+          <div className="columns-only-box">
+            <p className="step-hint">
+              <strong>Chỉ thêm cột (khuyến nghị):</strong> giữ nguyên 100% file gốc — công thức, hình vẽ, bảng biến
+              thiên, định dạng chữ — chỉ chèn thêm cột "Năng lực số" (và "Giáo dục hòa nhập" nếu có khai báo HSKT ở
+              trên) vào các bảng hoạt động đã có sẵn. AI chỉ viết vài câu ngắn cho cột mới nên rủi ro sai lệch thấp
+              hơn nhiều so với cách soạn lại toàn bộ bên dưới.
+            </p>
+            {columnsOnlyError && <p className="error-banner">{columnsOnlyError}</p>}
+            {columnsOnlyDone && <p className="parse-summary__ok">✓ {columnsOnlyDone}</p>}
+            <button className="btn btn--primary" onClick={handleColumnsOnly} disabled={!rawFile || columnsOnlyRunning}>
+              {columnsOnlyRunning ? 'Đang thêm cột…' : 'Chỉ thêm cột (giữ nguyên 100% file gốc)'}
+            </button>
+          </div>
+
+          <h2 className="section-title">4. Hoặc soạn lại toàn bộ bằng AI</h2>
           <p className="step-hint">
-            AI sẽ soạn KHBD đầy đủ, có cột riêng năng lực số &amp; giáo dục hòa nhập, dựa trên thông tin và giáo án gốc ở trên.
+            AI sẽ soạn lại TOÀN BỘ giáo án (kể cả chép lại nội dung gốc), có cột riêng năng lực số &amp; giáo dục hòa
+            nhập. Dùng khi file gốc CHƯA có bảng "HOẠT ĐỘNG CỦA GV VÀ HS" sẵn, hoặc cần AI viết lại/định dạng lại
+            nhiều — nhưng với giáo án dài/phức tạp có thể gặp sai lệch khi AI chép lại nội dung, nên kiểm tra kỹ bản
+            xem trước trước khi dùng.
           </p>
           {genError && <p className="error-banner">{genError}</p>}
-          <button className="btn btn--primary" onClick={handleGenerate} disabled={generating}>
-            {generating ? 'Đang soạn KHBD…' : 'Soạn giáo án bằng AI'}
+          <button className="btn btn--secondary" onClick={handleGenerate} disabled={generating}>
+            {generating ? 'Đang soạn KHBD…' : 'Soạn lại toàn bộ bằng AI'}
           </button>
         </section>
 
         <section className="page__col page__col--preview">
-          <h2 className="section-title">4. Kết quả</h2>
+          <h2 className="section-title">5. Kết quả (soạn lại toàn bộ)</h2>
           {!result && !generating && <p className="empty-state">Kết quả sẽ hiện ở đây sau khi soạn.</p>}
           {generating && (
             <div className="generating-status">

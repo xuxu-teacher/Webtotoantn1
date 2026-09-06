@@ -109,10 +109,20 @@ function inlineToRuns(
   equations: Record<string, EquationEntry>,
   images: Record<string, ImageEntry>
 ): ParaChild[] {
-  const parts = line.split(/(\[\[EQ:[^\]]+\]\]|\[\[IMG:[^\]]+\]\]|\$[^$]+\$)/g).filter((p) => p !== '');
+  const parts = line.split(/(\[\[EQ:[^\]]+\]\]|\[\[IMG:[^\]]+\]\]|\[\[BBTFAIL\]\]|\$[^$]+\$)/g).filter((p) => p !== '');
   const runs: ParaChild[] = [];
 
   for (const part of parts) {
+    if (part === '[[BBTFAIL]]') {
+      runs.push(
+        new TextRun({
+          text: '[Bảng biến thiên vẽ tay bằng hình mũi tên nổi trong Word — không trích xuất chính xác được bằng văn bản (có thể sai thứ tự số liệu), vui lòng xem và chèn thủ công từ file gốc]',
+          italics: true,
+          color: 'A13D3D',
+        })
+      );
+      continue;
+    }
     const imgMatch = part.match(/^\[\[IMG:([^\]]+)\]\]$/);
     if (imgMatch) {
       const entry = images[imgMatch[1]];

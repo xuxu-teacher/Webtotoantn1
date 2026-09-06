@@ -78,6 +78,12 @@ SO>>>
 (nội dung điều chỉnh giáo dục hòa nhập cho mục này — chỉ xuất hiện khi đủ điều kiện, xem mục 4)
 KT>>>
 
+   MỖI khối PHẢI đóng bằng ĐÚNG marker ĐẦY ĐỦ tương ứng — "GOC>>>", "SO>>>", "KT>>>" — TUYỆT
+   ĐỐI KHÔNG được rút gọn/viết thiếu tiền tố thành ">>>" trơn (lỗi thực tế đã gặp: viết ">>>"
+   thay vì "SO>>>"/"KT>>>" khiến toàn bộ phần bài phía sau bị đọc nhầm vào khối đó). Luôn kiểm
+   tra lại: mỗi "<<<GOC"/"<<<SO"/"<<<KT" đã mở PHẢI có đúng MỘT marker đóng đủ ba chữ cái
+   tương ứng ngay sau nội dung của nó, không thiếu, không dùng nhầm marker đóng của khối khác.
+
 3. KHỐI GOC — QUAN TRỌNG NHẤT: phải là bản SAO Y NGUYÊN VĂN phần tương ứng trong "NGỮ LIỆU
    TRÍCH TỪ GIÁO ÁN GỐC" ở dưới — giữ đúng từng câu chữ, thứ tự, gạch đầu dòng, placeholder
    công thức [[EQ:CTx]] như bản gốc. TUYỆT ĐỐI KHÔNG diễn giải lại, không tóm tắt, không đổi
@@ -172,6 +178,11 @@ KT>>>
    trong khối GOC, CHỈ được xuất lại ĐÚNG NGUYÊN VĂN placeholder trần đó (ví dụ [[TBL:TBL1]])
    tại đúng vị trí xuất hiện trong câu — TUYỆT ĐỐI KHÔNG viết lại bảng đó bằng ký tự "|" hay
    bất kỳ hình thức nào khác, không đoán nội dung bảng để mô tả thay, không xoá placeholder.
+6d. Placeholder [[BBTFAIL]] đánh dấu một bảng biến thiên vẽ tay bằng mũi tên nổi mà hệ thống
+   không trích xuất được (đã tự thay bằng lời nhắc cho giáo viên) — CHỈ xuất lại ĐÚNG NGUYÊN
+   VĂN placeholder trần đó, TUYỆT ĐỐI KHÔNG tự viết ra số liệu bảng biến thiên thay cho nó
+   (kể cả khi bạn "đoán" được từ ngữ cảnh xung quanh) vì có thể sai thứ tự, không xoá
+   placeholder.
 7. Nếu trong khối SO hoặc KT bạn cần viết MỘT công thức toán MỚI (không có trong ngữ liệu
    gốc, ví dụ ví dụ minh hoạ trong một prompt gợi ý AI), được phép dùng LaTeX bọc trong
    $...$, nhưng CHỈ dùng cú pháp đơn giản: chữ/số, ^{...} (số mũ), _{...} (chỉ số dưới),
@@ -262,7 +273,7 @@ function countSectionsMissingKt(markdown: string): { total: number; missing: num
 // pháp bảng hỏng ra bài. Không thể tự sửa an toàn (không biết chính xác đoạn
 // văn nào AI đã tự viết ra để mà xoá) nên chỉ cảnh báo cho giáo viên kiểm tra.
 function findMissingPlaceholders(sourceContent: string, markdown: string): string[] {
-  const placeholderRe = /\[\[(?:EQ|IMG|TBL):[^\]]+\]\]/g;
+  const placeholderRe = /\[\[(?:EQ|IMG|TBL):[^\]]+\]\]|\[\[BBTFAIL\]\]/g;
   const sourceSet = new Set(sourceContent.match(placeholderRe) || []);
   const outputSet = new Set(markdown.match(placeholderRe) || []);
   return [...sourceSet].filter((p) => !outputSet.has(p));
@@ -505,15 +516,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       warnings.push('AI có thể chưa tuân thủ đúng định dạng cột yêu cầu — kiểm tra lại bản xem trước trước khi dùng.');
     }
 
+    // Đếm marker mở/đóng bằng regex đơn giản (không import khbdParser.ts —
+    // xem lý do ở countSectionsMissingKt) — lỗi thực tế đã gặp: AI đóng khối
+    // SO/KT bằng ">>>" trơn thay vì "SO>>>"/"KT>>>" đầy đủ. Bộ phân tích phía
+    // client đã tự khắc phục được (chấp nhận ">>>" trơn làm marker đóng thay
+    // thế), nhưng vẫn cảnh báo để giáo viên biết mà kiểm tra kỹ hơn.
+    const openSo = (markdown.match(/<<<SO\b/g) || []).length;
+    const closeSo = (markdown.match(/SO>>>/g) || []).length;
+    const openKt = (markdown.match(/<<<KT\b/g) || []).length;
+    const closeKt = (markdown.match(/KT>>>/g) || []).length;
+    if (openSo > closeSo || openKt > closeKt) {
+      warnings.push(
+        'AI đóng một số khối Năng lực số/Giáo dục hòa nhập bằng ">>>" thiếu tiền tố thay vì "SO>>>"/"KT>>>" đầy đủ — hệ thống đã tự khắc phục khi hiển thị, nhưng nên kiểm tra kỹ ranh giới các mục trong bản xem trước để chắc chắn không có nội dung bị lẫn sang mục khác.'
+      );
+    }
+
     const missingPlaceholders = findMissingPlaceholders(body.sourceContent || '', markdown);
     if (missingPlaceholders.length > 0) {
       const imgN = missingPlaceholders.filter((p) => p.startsWith('[[IMG:')).length;
       const eqN = missingPlaceholders.filter((p) => p.startsWith('[[EQ:')).length;
       const tblN = missingPlaceholders.filter((p) => p.startsWith('[[TBL:')).length;
+      const bbtN = missingPlaceholders.filter((p) => p === '[[BBTFAIL]]').length;
       const parts = [
         imgN ? `${imgN} hình vẽ/ảnh` : '',
         eqN ? `${eqN} công thức` : '',
         tblN ? `${tblN} bảng lồng` : '',
+        bbtN ? `${bbtN} ghi chú bảng biến thiên không trích xuất được` : '',
       ].filter(Boolean);
       warnings.push(
         `AI có thể đã bỏ mất hoặc VIẾT LẠI thay vì giữ nguyên ${parts.join(', ')} từ file gốc (ví dụ vẽ lại bảng biến thiên bằng ký tự "|" thay vì giữ ảnh gốc) — kiểm tra kỹ các mục liên quan trong bản xem trước, đối chiếu với file Word gốc nếu cần.`
