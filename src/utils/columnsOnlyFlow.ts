@@ -1,12 +1,15 @@
 import JSZip from 'jszip';
 import { saveAs } from 'file-saver';
-import { findActivityTables, injectAllColumns, type ColumnContent } from './docxColumnInjector';
+import { findActivityTables, injectAllColumns, injectHeaderAndWeek, type ColumnContent } from './docxColumnInjector';
 import type { DisabilityAccommodation } from '../types';
 
 export interface ColumnsOnlyOptions {
   subject: string;
   grade: string;
   accommodation: DisabilityAccommodation;
+  headerNote?: string;
+  weekNumber?: string;
+  durationPeriods?: number;
 }
 
 export interface ColumnsOnlyResult {
@@ -48,8 +51,15 @@ export async function runColumnsOnlyFlow(file: File, options: ColumnsOnlyOptions
   const alreadyHadKt = tables.filter((t) => t.hasKt).length;
 
   if (needy.length === 0) {
-    // Không có gì cần thêm (mọi bảng đã có đủ cột) -> vẫn xuất lại file y
-    // nguyên để giáo viên có phản hồi rõ ràng thay vì im lặng không làm gì.
+    // Không có gì cần thêm (mọi bảng đã có đủ cột) -> vẫn xuất lại file (kèm
+    // header/tuần thực hiện nếu có khai báo) để giáo viên có phản hồi rõ ràng
+    // thay vì im lặng không làm gì.
+    const xmlWithHeader = injectHeaderAndWeek(documentXml, {
+      headerNote: options.headerNote,
+      weekNumber: options.weekNumber,
+      durationPeriods: options.durationPeriods,
+    });
+    if (xmlWithHeader !== documentXml) zip.file('word/document.xml', xmlWithHeader);
     saveAs(await zip.generateAsync({ type: 'blob' }), file.name.replace(/\.docx$/i, '') + ' (đã có đủ cột).docx');
     return { tablesFound: tables.length, tablesUpdated: 0, alreadyHadNls, alreadyHadKt };
   }
@@ -95,7 +105,12 @@ export async function runColumnsOnlyFlow(file: File, options: ColumnsOnlyOptions
     throw new Error('AI không trả về nội dung hợp lệ cho bất kỳ bảng nào — thử lại.');
   }
 
-  const newDocumentXml = injectAllColumns(documentXml, tables, contentByIndex);
+  const columnsInjected = injectAllColumns(documentXml, tables, contentByIndex);
+  const newDocumentXml = injectHeaderAndWeek(columnsInjected, {
+    headerNote: options.headerNote,
+    weekNumber: options.weekNumber,
+    durationPeriods: options.durationPeriods,
+  });
   zip.file('word/document.xml', newDocumentXml);
   const blob = await zip.generateAsync({ type: 'blob' });
   saveAs(blob, file.name.replace(/\.docx$/i, '') + ' (đã thêm cột).docx');

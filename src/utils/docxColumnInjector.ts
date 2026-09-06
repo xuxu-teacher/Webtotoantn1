@@ -173,6 +173,54 @@ function escapeXmlText(s: string): string {
   return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
+/**
+ * Chèn header tài liệu (tên trường/tổ/GV soạn...) và dòng "Tuần thực hiện/Số
+ * tiết" vào NGAY ĐẦU văn bản (ngay sau <w:body>), dưới dạng đoạn văn MỚI HOÀN
+ * TOÀN — không sửa/xoá bất kỳ đoạn nào có sẵn, đúng tinh thần "không chỉnh sửa
+ * gì về tài liệu gốc" của chế độ chỉ-thêm-cột. Áp dụng SAU khi đã chèn xong
+ * cột (injectAllColumns) — vì đây là một điểm neo cố định đứng TRƯỚC mọi bảng
+ * (ngay đầu <w:body>), việc chèn ở đây không làm lệch vị trí các bảng đã tính
+ * trước đó.
+ */
+export function injectHeaderAndWeek(
+  documentXml: string,
+  opts: { headerNote?: string; weekNumber?: string; durationPeriods?: number }
+): string {
+  const bodyOpenMatch = documentXml.match(/<w:body>/);
+  if (!bodyOpenMatch || bodyOpenMatch.index === undefined) return documentXml;
+  const insertPos = bodyOpenMatch.index + bodyOpenMatch[0].length;
+
+  const rFonts = '<w:rFonts w:ascii="Times New Roman" w:eastAsia="Times New Roman" w:hAnsi="Times New Roman" w:cs="Times New Roman"/>';
+  const paras: string[] = [];
+
+  const headerLines = (opts.headerNote || '').split('\n').map((l) => l.trim()).filter(Boolean);
+  headerLines.forEach((line, i) => {
+    const rPr = `${rFonts}${i === 0 ? '<w:b/>' : ''}<w:sz w:val="24"/><w:szCs w:val="24"/>`;
+    paras.push(
+      `<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr>${rPr}</w:rPr><w:t xml:space="preserve">${escapeXmlText(
+        line
+      )}</w:t></w:r></w:p>`
+    );
+  });
+
+  const weekParts: string[] = [];
+  if (opts.weekNumber?.trim()) weekParts.push(`Tuần thực hiện: ${opts.weekNumber.trim()}`);
+  if (opts.durationPeriods) weekParts.push(`Số tiết: ${opts.durationPeriods}`);
+  if (weekParts.length > 0) {
+    const rPr = `${rFonts}<w:i/><w:sz w:val="24"/><w:szCs w:val="24"/>`;
+    paras.push(
+      `<w:p><w:pPr><w:jc w:val="center"/></w:pPr><w:r><w:rPr>${rPr}</w:rPr><w:t xml:space="preserve">${escapeXmlText(
+        weekParts.join('   —   ')
+      )}</w:t></w:r></w:p>`
+    );
+  }
+
+  if (paras.length === 0) return documentXml;
+  paras.push('<w:p/>'); // dòng trống ngăn cách với nội dung gốc phía dưới
+
+  return documentXml.slice(0, insertPos) + paras.join('') + documentXml.slice(insertPos);
+}
+
 /** Dựng XML cho MỘT ô mới (dùng cho cả ô tiêu đề và ô dữ liệu). Mỗi dòng của
  * `text` (phân theo \n) thành một đoạn <w:p> riêng. Dùng font Times New Roman
  * cỡ 13.5pt (sz=27, đơn vị half-point) — khớp với font phổ biến trong các

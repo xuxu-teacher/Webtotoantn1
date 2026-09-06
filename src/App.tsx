@@ -93,7 +93,14 @@ export default function App() {
     setColumnsOnlyDone(null);
     setColumnsOnlyRunning(true);
     try {
-      const res = await runColumnsOnlyFlow(rawFile, { subject: SUBJECT, grade, accommodation });
+      const res = await runColumnsOnlyFlow(rawFile, {
+        subject: SUBJECT,
+        grade,
+        accommodation,
+        headerNote,
+        weekNumber,
+        durationPeriods,
+      });
       setColumnsOnlyDone(
         res.tablesUpdated === 0
           ? `Cả ${res.tablesFound} bảng đều đã có đủ cột — không cần thêm gì, đã tải lại file y nguyên.`
