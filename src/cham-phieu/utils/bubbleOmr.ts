@@ -1,0 +1,759 @@
+/**
+ * ĐỌC Ô TÔ (bubble) TRÊN PHIẾU TRẢ LỜI BẰNG XỬ LÝ ẢNH — KHÔNG DÙNG AI
+ *
+ * Phần I (A/B/C/D) và Phần II (Đúng/Sai) được đọc bằng toạ độ điểm ảnh nên kết quả
+ * ổn định, không "đoán". Các bước:
+ *   1. Ảnh -> ảnh xám (lấy kênh tối nhất để mực xanh cũng thành đậm), thu nhỏ hợp lí.
+ *   2. Nhị phân hoá cục bộ -> tìm các ô vuông đen ■ (mốc định vị).
+ *   3. Thử mọi cách chọn 4 mốc góc, giữ cách khớp mẫu phiếu tốt nhất (đúng cả khi ảnh xoay).
+ *   4. Nắn phẳng (phép biến đổi phối cảnh) về hệ toạ độ chuẩn của mẫu phiếu.
+ *   5. Từng khối ô: dò lại tâm ô thật (giấy cong, in lệch vẫn bám đúng).
+ *   6. Đo độ đậm lòng mỗi ô, so với nền giấy tại chỗ -> chọn đáp án;
+ *      tô nhiều ô / ô mờ / vết tẩy -> đánh dấu để giáo viên quyết.
+ *
+ * File này chỉ chứa thuật toán thuần (không dùng DOM) để chạy được cả trong trình duyệt lẫn khi kiểm thử.
+ */
+
+// ---------------- KIỂU DỮ LIỆU ----------------
+
+/** Ảnh xám: d[y*w+x] = độ sáng 0..255 */
+export interface Gray {
+  w: number
+  h: number
+  d: Uint8Array | Uint8ClampedArray | Float32Array
+}
+
+export interface Pt {
+  x: number
+  y: number
+}
+
+/** Một hàng lựa chọn: Phần I = 4 ô A..D, Phần II = 2 ô Đúng/Sai */
+export interface BubbleRow {
+  part: 1 | 2
+  q: number // số thứ tự câu (bắt đầu 1)
+  sub?: number // Phần II: ý 0..3 (a..d)
+  block: string // các hàng cùng khối được căn chỉnh chung
+  r?: number // bán kính ô (tâm nét viền), mặc định = template.bubbleR
+  opts: Pt[] // tâm các ô (toạ độ mẫu)
+}
+
+export interface SheetTemplate {
+  kind: 'school' | 'class'
+  /** 4 mốc góc theo thứ tự: trên-trái, trên-phải, dưới-trái, dưới-phải (toạ độ mẫu) */
+  corners: [Pt, Pt, Pt, Pt]
+  /** Các mốc phụ (để xác nhận đúng phiếu và đúng chiều) */
+  extraMarkers: Pt[]
+  markerSize: number // cạnh ô mốc (đơn vị mẫu)
+  bubbleR: number // bán kính ô tô (đơn vị mẫu)
+  rows: BubbleRow[]
+  /** Vùng chữ viết tay gửi cho AI đọc (đơn vị mẫu) */
+  crops: { id: 'header' | 'p3'; x: number; y: number; w: number; h: number }[]
+  /** Mã cấu trúc in trên phiếu (ô vuông đặc = 1, ô rỗng = 0) để chống dùng nhầm phiếu của đề khác */
+  code?: { bits: Pt[]; size: number; value: number; describe: (v: number) => string }
+  /** Khung bao toàn phiếu (đơn vị mẫu) — để vẽ ảnh đối chiếu */
+  frame: { x: number; y: number; w: number; h: number }
+}
+
+export interface BubbleRead {
+  /** Phần I: chỉ số câu (0-based) -> 'A'..'D' | null */
+  p1: (string | null)[]
+  /** Phần II: [câu][ý] -> true/false/null */
+  p2: (boolean | null)[][]
+  flags: Record<string, string>
+  /** Điểm đậm từng ô theo hàng (để vẽ ảnh đối chiếu, gỡ lỗi) */
+  detail: { row: BubbleRow; centers: Pt[]; scores: number[]; rings: number[]; chosen: number | null; flagged: boolean }[]
+  /** Ma trận đồng nhất: toạ độ mẫu -> toạ độ ảnh gốc */
+  H: number[]
+  quality: number // 0..1: độ khớp mẫu
+  inkLevel: number
+}
+
+export class OmrError extends Error {}
+
+// ---------------- ẢNH XÁM ----------------
+
+/**
+ * RGBA -> ảnh xám. Lấy min(R,G,B) để mực xanh/tím, bút chì, bút đen đều thành "đậm",
+ * nền giấy trắng/ngà vẫn sáng. Thu nhỏ để cạnh dài ≤ maxSide.
+ */
+export function rgbaToGray(rgba: Uint8ClampedArray | Uint8Array, w: number, h: number, maxSide = 2000): Gray {
+  const s = Math.min(1, maxSide / Math.max(w, h))
+  const W = Math.max(1, Math.round(w * s))
+  const Hh = Math.max(1, Math.round(h * s))
+  const out = new Uint8Array(W * Hh)
+  if (s === 1) {
+    for (let i = 0, j = 0; i < out.length; i++, j += 4) {
+      const r = rgba[j],
+        g = rgba[j + 1],
+        b = rgba[j + 2]
+      out[i] = r < g ? (r < b ? r : b) : g < b ? g : b
+    }
+    return { w: W, h: Hh, d: out }
+  }
+  // thu nhỏ bằng trung bình ô (box filter)
+  const inv = 1 / s
+  for (let y = 0; y < Hh; y++) {
+    const y0 = Math.floor(y * inv),
+      y1 = Math.min(h, Math.max(y0 + 1, Math.floor((y + 1) * inv)))
+    for (let x = 0; x < W; x++) {
+      const x0 = Math.floor(x * inv),
+        x1 = Math.min(w, Math.max(x0 + 1, Math.floor((x + 1) * inv)))
+      let sum = 0,
+        n = 0
+      for (let yy = y0; yy < y1; yy++)
+        for (let xx = x0; xx < x1; xx++) {
+          const j = (yy * w + xx) * 4
+          const r = rgba[j],
+            g = rgba[j + 1],
+            b = rgba[j + 2]
+          sum += r < g ? (r < b ? r : b) : g < b ? g : b
+          n++
+        }
+      out[y * W + x] = sum / n
+    }
+  }
+  return { w: W, h: Hh, d: out }
+}
+
+/** Nhị phân hoá theo trung bình cục bộ (ảnh tích phân): 1 = đậm */
+export function adaptiveBinarize(g: Gray, win: number, c: number): Uint8Array {
+  const { w, h, d } = g
+  const W1 = w + 1
+  const I = new Float64Array(W1 * (h + 1))
+  for (let y = 0; y < h; y++) {
+    let row = 0
+    for (let x = 0; x < w; x++) {
+      row += d[y * w + x]
+      I[(y + 1) * W1 + x + 1] = I[y * W1 + x + 1] + row
+    }
+  }
+  const r = Math.max(2, Math.floor(win / 2))
+  const out = new Uint8Array(w * h)
+  for (let y = 0; y < h; y++) {
+    const ya = Math.max(0, y - r),
+      yb = Math.min(h, y + r + 1)
+    for (let x = 0; x < w; x++) {
+      const xa = Math.max(0, x - r),
+        xb = Math.min(w, x + r + 1)
+      const sum = I[yb * W1 + xb] - I[ya * W1 + xb] - I[yb * W1 + xa] + I[ya * W1 + xa]
+      const mean = sum / ((yb - ya) * (xb - xa))
+      out[y * w + x] = d[y * w + x] < mean - c ? 1 : 0
+    }
+  }
+  return out
+}
+
+interface Blob {
+  x0: number
+  y0: number
+  x1: number
+  y1: number
+  area: number
+  cx: number
+  cy: number
+  vxx: number // phương sai toạ độ (bất biến khi xoay: vxx + vyy)
+  vyy: number
+  vxy: number
+}
+
+/** Tìm các vùng liên thông (8 hướng) của ảnh nhị phân */
+export function components(bin: Uint8Array, w: number, h: number, maxSide: number): Blob[] {
+  const lab = new Int32Array(w * h)
+  const out: Blob[] = []
+  const stack = new Int32Array(w * h)
+  let id = 0
+  for (let p = 0; p < w * h; p++) {
+    if (!bin[p] || lab[p]) continue
+    id++
+    let sp = 0
+    stack[sp++] = p
+    lab[p] = id
+    let x0 = w,
+      y0 = h,
+      x1 = 0,
+      y1 = 0,
+      area = 0,
+      sx = 0,
+      sy = 0,
+      sxx = 0,
+      syy = 0,
+      sxy = 0,
+      big = false
+    while (sp) {
+      const q = stack[--sp]
+      const qx = q % w,
+        qy = (q - qx) / w
+      area++
+      sx += qx
+      sy += qy
+      sxx += qx * qx
+      syy += qy * qy
+      sxy += qx * qy
+      if (qx < x0) x0 = qx
+      if (qx > x1) x1 = qx
+      if (qy < y0) y0 = qy
+      if (qy > y1) y1 = qy
+      if (x1 - x0 > maxSide || y1 - y0 > maxSide) big = true
+      for (let dy = -1; dy <= 1; dy++) {
+        const ny = qy + dy
+        if (ny < 0 || ny >= h) continue
+        for (let dx = -1; dx <= 1; dx++) {
+          const nx = qx + dx
+          if (nx < 0 || nx >= w) continue
+          const n = ny * w + nx
+          if (bin[n] && !lab[n]) {
+            lab[n] = id
+            stack[sp++] = n
+          }
+        }
+      }
+    }
+    if (!big) {
+      const cx = sx / area,
+        cy = sy / area
+      out.push({ x0, y0, x1, y1, area, cx, cy, vxx: sxx / area - cx * cx, vyy: syy / area - cy * cy, vxy: sxy / area - cx * cy })
+    }
+  }
+  return out
+}
+
+// ---------------- PHÉP BIẾN ĐỔI PHỐI CẢNH ----------------
+
+/** Giải hệ Ax=b (Gauss, chọn trụ) */
+function solve(A: number[][], b: number[]): number[] | null {
+  const n = b.length
+  const M = A.map((r, i) => [...r, b[i]])
+  for (let c = 0; c < n; c++) {
+    let p = c
+    for (let r = c + 1; r < n; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r
+    if (Math.abs(M[p][c]) < 1e-12) return null
+    ;[M[c], M[p]] = [M[p], M[c]]
+    for (let r = 0; r < n; r++) {
+      if (r === c) continue
+      const f = M[r][c] / M[c][c]
+      for (let k = c; k <= n; k++) M[r][k] -= f * M[c][k]
+    }
+  }
+  return M.map((r, i) => r[n] / r[i])
+}
+
+/** Ma trận H (3x3, h33 = 1) biến src[i] -> dst[i] (4 cặp điểm) */
+export function homography(src: Pt[], dst: Pt[]): number[] | null {
+  const A: number[][] = []
+  const b: number[] = []
+  for (let i = 0; i < 4; i++) {
+    const { x, y } = src[i]
+    const { x: u, y: v } = dst[i]
+    A.push([x, y, 1, 0, 0, 0, -u * x, -u * y])
+    b.push(u)
+    A.push([0, 0, 0, x, y, 1, -v * x, -v * y])
+    b.push(v)
+  }
+  const s = solve(A, b)
+  return s ? [...s, 1] : null
+}
+
+export function applyH(H: number[], p: Pt): Pt {
+  const z = H[6] * p.x + H[7] * p.y + H[8]
+  return { x: (H[0] * p.x + H[1] * p.y + H[2]) / z, y: (H[3] * p.x + H[4] * p.y + H[5]) / z }
+}
+
+/** Lấy mẫu độ sáng tại (x,y) bằng nội suy song tuyến; ngoài ảnh = 255 */
+export function sampleGray(g: Gray, x: number, y: number): number {
+  if (x < 0 || y < 0 || x > g.w - 1 || y > g.h - 1) return 255
+  const x0 = Math.floor(x),
+    y0 = Math.floor(y)
+  const x1 = Math.min(g.w - 1, x0 + 1),
+    y1 = Math.min(g.h - 1, y0 + 1)
+  const fx = x - x0,
+    fy = y - y0
+  const d = g.d
+  const a = d[y0 * g.w + x0] * (1 - fx) + d[y0 * g.w + x1] * fx
+  const b = d[y1 * g.w + x0] * (1 - fx) + d[y1 * g.w + x1] * fx
+  return a * (1 - fy) + b * fy
+}
+
+/**
+ * Nắn phẳng: tạo ảnh xám trong hệ toạ độ mẫu, vùng [x0, x0+w] × [y0, y0+h], tỉ lệ `scale` px / đơn vị mẫu.
+ */
+export function warp(g: Gray, H: number[], x0: number, y0: number, w: number, h: number, scale: number): Gray {
+  const W = Math.round(w * scale),
+    Hh = Math.round(h * scale)
+  const out = new Float32Array(W * Hh)
+  for (let j = 0; j < Hh; j++)
+    for (let i = 0; i < W; i++) {
+      const p = applyH(H, { x: x0 + (i + 0.5) / scale, y: y0 + (j + 0.5) / scale })
+      out[j * W + i] = sampleGray(g, p.x, p.y)
+    }
+  return { w: W, h: Hh, d: out }
+}
+
+// ---------------- TÌM MỐC ■ ----------------
+
+interface Cand extends Pt {
+  side: number
+  fill: number
+}
+
+function markerCandidates(g: Gray): Cand[] {
+  const long = Math.max(g.w, g.h)
+  const win = Math.max(15, Math.round(long / 25)) | 1
+  const bin = adaptiveBinarize(g, win, 12)
+  const maxSide = Math.round(long * 0.06)
+  const minSide = Math.max(4, Math.round(long * 0.005))
+  const out: Cand[] = []
+  for (const b of components(bin, g.w, g.h, maxSide)) {
+    const bw = b.x1 - b.x0 + 1,
+      bh = b.y1 - b.y0 + 1
+    if (bw < minSide || bh < minSide) continue
+    // Hình đặc, gọn (vuông/tròn đặc) — không phụ thuộc góc xoay:
+    // vuông đặc: diện tích / (vxx+vyy) = 6; tròn đặc: 2π ≈ 6.28; hình rỗng/chữ: nhỏ hơn nhiều
+    const tr = b.vxx + b.vyy + 1 / 6
+    const k = b.area / tr
+    if (k < 4.9 || k > 7) continue
+    const det = Math.sqrt(Math.max(0, ((b.vxx - b.vyy) / 2) ** 2 + b.vxy * b.vxy))
+    const l1 = (b.vxx + b.vyy) / 2 + det,
+      l2 = (b.vxx + b.vyy) / 2 - det
+    if (l2 <= 0 || l1 / l2 > 2.2) continue // kéo dài -> không phải ô vuông
+    out.push({ x: b.cx, y: b.cy, side: Math.sqrt(b.area), fill: k })
+  }
+  // giữ các vùng lớn nhất (mốc thường to hơn chữ, chấm bẩn)
+  out.sort((a, b) => b.side - a.side)
+  return out.slice(0, 90)
+}
+
+/**
+ * Chọn bộ mốc khớp mẫu tốt nhất. Thử mọi bộ 3 (trên-trái, trên-phải, dưới-trái), dự đoán mốc
+ * dưới-phải, tính H rồi chấm điểm: số mốc phụ khớp + độ đều kích thước + vòng tròn ô tô hiện rõ.
+ */
+function locate(g: Gray, t: SheetTemplate): { H: number[]; quality: number } {
+  const cands = markerCandidates(g)
+  if (cands.length < 4) throw new OmrError('Không tìm thấy đủ 4 ô vuông đen định vị (■) trên ảnh.')
+  const [TL, TR, BL, BR] = t.corners
+  const tw = Math.hypot(TR.x - TL.x, TR.y - TL.y)
+  const th = Math.hypot(BL.x - TL.x, BL.y - TL.y)
+  const ratio = tw / th
+  // vài hàng ô mẫu để kiểm tra (ô trống phải có vòng tròn)
+  const probeRows = t.rows.filter((_, i) => i % 3 === 0).slice(0, 40)
+  let best: { H: number[]; score: number; quality: number } | null = null
+  const n = cands.length
+  for (let a = 0; a < n; a++)
+    for (let b = 0; b < n; b++) {
+      if (b === a) continue
+      const A = cands[a],
+        B = cands[b]
+      const dAB = Math.hypot(B.x - A.x, B.y - A.y)
+      if (dAB < Math.max(g.w, g.h) * 0.2) continue
+      for (let c = 0; c < n; c++) {
+        if (c === a || c === b) continue
+        const C = cands[c]
+        const dAC = Math.hypot(C.x - A.x, C.y - A.y)
+        const r = dAB / dAC
+        if (r < ratio * 0.7 || r > ratio * 1.4) continue
+        // AB ⟂ AC (gần vuông góc) và chiều quay đúng (B ở "bên phải" của A khi nhìn theo AC xuống)
+        const cos = ((B.x - A.x) * (C.x - A.x) + (B.y - A.y) * (C.y - A.y)) / (dAB * dAC)
+        if (Math.abs(cos) > 0.35) continue
+        const cross = (B.x - A.x) * (C.y - A.y) - (B.y - A.y) * (C.x - A.x)
+        if (cross <= 0) continue
+        const pred = { x: B.x + C.x - A.x, y: B.y + C.y - A.y }
+        let D: Cand | null = null
+        let dd = Infinity
+        for (let k = 0; k < n; k++) {
+          if (k === a || k === b || k === c) continue
+          const e = Math.hypot(cands[k].x - pred.x, cands[k].y - pred.y)
+          if (e < dd) {
+            dd = e
+            D = cands[k]
+          }
+        }
+        if (!D || dd > 0.25 * Math.min(dAB, dAC)) continue
+        const sides = [A.side, B.side, C.side, D.side]
+        const sMax = Math.max(...sides),
+          sMin = Math.min(...sides)
+        if (sMax > sMin * 1.8) continue
+        const H = homography([TL, TR, BL, BR], [A, B, C, D])
+        if (!H) continue
+        // kích thước mốc phải khớp mẫu
+        const unit = dAB / tw
+        const expSide = t.markerSize * unit
+        const avgSide = sides.reduce((s, v) => s + v, 0) / 4
+        if (avgSide < expSide * 0.5 || avgSide > expSide * 1.9) continue
+        let score = 0
+        let missing = 0
+        // mốc phụ: phải có đủ (xác định đúng phiếu, đúng chiều)
+        for (const m of t.extraMarkers) if (!markerAt(g, H, m, t.markerSize)) missing++
+        if (missing) continue
+        // vòng tròn ô tô
+        const ring = ringEvidence(g, H, t, probeRows)
+        score += ring * 10
+        if (!best || score > best.score) best = { H, score, quality: ring }
+      }
+    }
+  if (!best) throw new OmrError('Không xác định được khung phiếu: chưa thấy đủ các ô vuông đen ■ đúng vị trí. Hãy chụp thẳng, rõ, lọt trọn cả tờ phiếu (đủ 4 góc).')
+  // kiểm tra lại trên toàn bộ ô của mẫu
+  best.quality = ringEvidence(g, best.H, t, t.rows)
+  if (best.quality < 0.9)
+    throw new OmrError('Ảnh không khớp mẫu phiếu đã chọn (không thấy các ô tròn ở vị trí cần). Kiểm tra lại loại phiếu hoặc chụp lại.')
+  return { H: best.H, quality: best.quality }
+}
+
+/** Đọc dãy bit: ô vuông nhỏ đặc = 1, rỗng = 0 (so độ sáng lòng ô với nền quanh) */
+function readCode(g: Gray, H: number[], bits: Pt[], size: number): number {
+  let v = 0
+  const lum = (x: number, y: number) => {
+    const p = applyH(H, { x, y })
+    return sampleGray(g, p.x, p.y)
+  }
+  bits.forEach((b, i) => {
+    let inside = 0,
+      n = 0
+    for (let dy = -size * 0.22; dy <= size * 0.22 + 1e-9; dy += size * 0.11)
+      for (let dx = -size * 0.22; dx <= size * 0.22 + 1e-9; dx += size * 0.11) {
+        inside += lum(b.x + dx, b.y + dy)
+        n++
+      }
+    inside /= n
+    const out = (lum(b.x, b.y - size * 1.1) + lum(b.x, b.y + size * 1.1)) / 2
+    if (inside < out * 0.6) v |= 1 << i
+  })
+  return v
+}
+
+/** Có ô vuông đen tại toạ độ mẫu m? (lòng đậm, xung quanh sáng; cho phép lệch nửa cạnh) */
+function markerAt(g: Gray, H: number[], m: Pt, side: number): boolean {
+  const avg = (cx: number, cy: number, half: number) => {
+    let s = 0,
+      n = 0
+    for (let dy = -half; dy <= half + 1e-9; dy += half / 3)
+      for (let dx = -half; dx <= half + 1e-9; dx += half / 3) {
+        const p = applyH(H, { x: cx + dx, y: cy + dy })
+        s += sampleGray(g, p.x, p.y)
+        n++
+      }
+    return s / n
+  }
+  let best = 255
+  for (let dy = -side * 0.5; dy <= side * 0.5 + 1e-9; dy += side / 4)
+    for (let dx = -side * 0.5; dx <= side * 0.5 + 1e-9; dx += side / 4) best = Math.min(best, avg(m.x + dx, m.y + dy, side * 0.3))
+  // nền: trung vị vòng ngoài
+  const ring: number[] = []
+  for (let k = 0; k < 16; k++) {
+    const a = (k / 16) * Math.PI * 2
+    const p = applyH(H, { x: m.x + Math.cos(a) * side * 1.6, y: m.y + Math.sin(a) * side * 1.6 })
+    ring.push(sampleGray(g, p.x, p.y))
+  }
+  ring.sort((a, b) => a - b)
+  const bg = ring[8]
+  return bg - best > 60 && best < bg * 0.6
+}
+
+/** Tỉ lệ ô (trong các hàng thử) có viền tròn/đậm rõ ở đúng chỗ, cho phép lệch nhỏ */
+function ringEvidence(g: Gray, H: number[], t: SheetTemplate, rows: BubbleRow[]): number {
+  let ok = 0,
+    tot = 0
+  for (const row of rows) {
+    const R = row.r ?? t.bubbleR
+    for (const o of row.opts) {
+      tot++
+      let bestv = 0
+      for (let dy = -R * 0.6; dy <= R * 0.6; dy += R * 0.3)
+        for (let dx = -R * 0.6; dx <= R * 0.6; dx += R * 0.3) {
+          const v = ringContrast(g, H, o.x + dx, o.y + dy, R)
+          if (v > bestv) bestv = v
+        }
+      if (bestv > 18) ok++
+    }
+  }
+  return tot ? ok / tot : 0
+}
+
+/** Độ tối trên vòng bán kính R trừ độ tối ở vòng ngoài 1.55R (đơn vị mức xám) */
+function ringContrast(g: Gray, H: number[], cx: number, cy: number, R: number): number {
+  let on = 0,
+    off = 0
+  const N = 16
+  for (let k = 0; k < N; k++) {
+    const a = (k / N) * Math.PI * 2
+    const c = Math.cos(a),
+      s = Math.sin(a)
+    let p = applyH(H, { x: cx + c * R, y: cy + s * R })
+    on += sampleGray(g, p.x, p.y)
+    p = applyH(H, { x: cx + c * R * 1.55, y: cy + s * R * 1.55 })
+    off += sampleGray(g, p.x, p.y)
+  }
+  return (off - on) / N
+}
+
+// ---------------- ĐO ĐỘ ĐẬM TỪNG Ô ----------------
+
+/** Ảnh nắn phẳng của một khối + hàm đổi toạ độ */
+interface Patch {
+  img: Gray
+  x0: number
+  y0: number
+  scale: number
+}
+
+function patchFor(g: Gray, H: number[], rows: BubbleRow[], R: number, scale: number): Patch {
+  let x0 = Infinity,
+    y0 = Infinity,
+    x1 = -Infinity,
+    y1 = -Infinity
+  for (const r of rows)
+    for (const o of r.opts) {
+      x0 = Math.min(x0, o.x)
+      y0 = Math.min(y0, o.y)
+      x1 = Math.max(x1, o.x)
+      y1 = Math.max(y1, o.y)
+    }
+  const m = R * 3.2
+  x0 -= m
+  y0 -= m
+  x1 += m
+  y1 += m
+  return { img: warp(g, H, x0, y0, x1 - x0, y1 - y0, scale), x0, y0, scale }
+}
+
+function pv(p: Patch, x: number, y: number): number {
+  return sampleGray(p.img, (x - p.x0) * p.scale - 0.5, (y - p.y0) * p.scale - 0.5)
+}
+
+/** Độ tương phản "vòng tròn" tại tâm (cx,cy) trên patch */
+function ringOnPatch(p: Patch, cx: number, cy: number, R: number): number {
+  let on = 0,
+    off = 0,
+    inside = 0
+  const N = 20
+  for (let k = 0; k < N; k++) {
+    const a = (k / N) * Math.PI * 2
+    const c = Math.cos(a),
+      s = Math.sin(a)
+    on += pv(p, cx + c * R, cy + s * R)
+    off += pv(p, cx + c * R * 1.5, cy + s * R * 1.5)
+    inside += pv(p, cx + c * R * 0.45, cy + s * R * 0.45)
+  }
+  // ô trống: viền tối hơn ngoài; ô tô: lòng + viền tối hơn ngoài -> cả hai đều cho giá trị dương
+  return (off - on) / N + Math.max(0, (off - inside) / N) * 0.5
+}
+
+/**
+ * Dò lại tâm ô thật trong khối: tìm độ lệch tốt nhất cho từng ô rồi khớp phép affine
+ * (bền với ngoại lai) cho cả khối — giấy cong / in lệch vài mm vẫn bám đúng.
+ */
+function refineBlock(p: Patch, rows: BubbleRow[], R: number, spacing: number): (row: BubbleRow, i: number) => Pt {
+  const lim = Math.min(spacing * 0.45, R * 1.4)
+  const st = Math.max(0.5, R / 10)
+  const samples: { x: number; y: number; dx: number; dy: number; v: number }[] = []
+  for (const r of rows)
+    for (const o of r.opts) {
+      let bv = -Infinity,
+        bx = 0,
+        by = 0
+      for (let dy = -lim; dy <= lim; dy += st)
+        for (let dx = -lim; dx <= lim; dx += st) {
+          const v = ringOnPatch(p, o.x + dx, o.y + dy, R)
+          if (v > bv) {
+            bv = v
+            bx = dx
+            by = dy
+          }
+        }
+      samples.push({ x: o.x, y: o.y, dx: bx, dy: by, v: bv })
+    }
+  // bỏ ô có tín hiệu yếu, rồi bỏ ngoại lai so với trung vị
+  const strong = samples.filter((s) => s.v > 12)
+  const use0 = strong.length >= 3 ? strong : samples
+  const med = (a: number[]) => {
+    const s = [...a].sort((x, y) => x - y)
+    return s.length ? s[Math.floor(s.length / 2)] : 0
+  }
+  const mdx = med(use0.map((s) => s.dx)),
+    mdy = med(use0.map((s) => s.dy))
+  const use = use0.filter((s) => Math.hypot(s.dx - mdx, s.dy - mdy) < R * 0.7)
+  // khớp dx = a + b x + c y (và dy tương tự); ít điểm thì chỉ tịnh tiến
+  let fx = (_x: number, _y: number) => mdx
+  let fy = (_x: number, _y: number) => mdy
+  if (use.length >= 6) {
+    const cx = use.reduce((s, u) => s + u.x, 0) / use.length
+    const cy = use.reduce((s, u) => s + u.y, 0) / use.length
+    const fit = (key: 'dx' | 'dy') => {
+      let sxx = 0,
+        sxy = 0,
+        syy = 0,
+        sxv = 0,
+        syv = 0,
+        sv = 0
+      for (const u of use) {
+        const X = u.x - cx,
+          Y = u.y - cy,
+          V = u[key]
+        sxx += X * X
+        sxy += X * Y
+        syy += Y * Y
+        sxv += X * V
+        syv += Y * V
+        sv += V
+      }
+      const det = sxx * syy - sxy * sxy
+      const a0 = sv / use.length
+      if (Math.abs(det) < 1e-6) return (_x: number, _y: number) => a0
+      const b = (sxv * syy - syv * sxy) / det
+      const c = (syv * sxx - sxv * sxy) / det
+      return (x: number, y: number) => a0 + b * (x - cx) + c * (y - cy)
+    }
+    fx = fit('dx')
+    fy = fit('dy')
+  }
+  return (row, i) => {
+    const o = row.opts[i]
+    return { x: o.x + fx(o.x, o.y), y: o.y + fy(o.x, o.y) }
+  }
+}
+
+/**
+ * Độ đậm lòng ô: trung bình (1 - sáng/nền) trong hình tròn bán kính 0.62R.
+ * Nền giấy = phân vị 90% độ sáng trong vùng quanh ô (tự thích nghi bóng đổ, ánh sáng lệch).
+ */
+function fillScore(p: Patch, c: Pt, R: number): number {
+  const ring: number[] = []
+  for (let k = 0; k < 24; k++) {
+    const a = (k / 24) * Math.PI * 2
+    ring.push(pv(p, c.x + Math.cos(a) * R * 1.9, c.y + Math.sin(a) * R * 1.9))
+  }
+  ring.sort((a, b) => a - b)
+  const paper = Math.max(60, ring[Math.floor(ring.length * 0.85)])
+  let sum = 0,
+    n = 0
+  const rr = R * 0.62
+  const st = rr / 4
+  for (let dy = -rr; dy <= rr + 1e-9; dy += st)
+    for (let dx = -rr; dx <= rr + 1e-9; dx += st) {
+      if (dx * dx + dy * dy > rr * rr) continue
+      const v = pv(p, c.x + dx, c.y + dy)
+      sum += Math.max(0, Math.min(1, 1 - v / paper))
+      n++
+    }
+  return n ? sum / n : 0
+}
+
+// ---------------- ĐỌC CẢ PHIẾU ----------------
+
+export interface ReadBubblesOptions {
+  n1: number
+  n2: number
+}
+
+export function readBubbles(g: Gray, t: SheetTemplate, opt: ReadBubblesOptions): BubbleRead {
+  const { H, quality } = locate(g, t)
+  if (t.code) {
+    const v = readCode(g, H, t.code.bits, t.code.size)
+    if (v !== t.code.value)
+      throw new OmrError(
+        `Phiếu này in cho ${t.code.describe(v)}, không khớp đợt chấm (${t.code.describe(t.code.value)}). Hãy dùng đúng mẫu phiếu tải từ đợt chấm này.`,
+      )
+  }
+  const R0 = t.bubbleR
+  // tỉ lệ nắn: ~12 px cho mỗi bán kính ô, nhưng không vượt độ phân giải ảnh gốc quá 1.5 lần
+  const [TL, TR] = t.corners
+  const q0 = applyH(H, TL),
+    q1 = applyH(H, TR)
+  const pxPerUnit = Math.hypot(q1.x - q0.x, q1.y - q0.y) / Math.hypot(TR.x - TL.x, TR.y - TL.y)
+  const scale = Math.min(12 / Math.min(R0, ...t.rows.map((r) => r.r ?? R0)), pxPerUnit * 1.5)
+
+  const used = t.rows.filter((r) => (r.part === 1 ? r.q <= opt.n1 : r.q <= opt.n2))
+  const blocks = new Map<string, BubbleRow[]>()
+  for (const r of t.rows) {
+    if (!blocks.has(r.block)) blocks.set(r.block, [])
+    blocks.get(r.block)!.push(r)
+  }
+
+  type Det = BubbleRead['detail'][number]
+  const detail: Det[] = []
+  for (const [, rows] of blocks) {
+    const mine = rows.filter((r) => used.includes(r))
+    if (!mine.length) continue
+    const R = rows[0].r ?? R0
+    const patch = patchFor(g, H, rows, R, scale)
+    const sp = spacingOf(rows)
+    // căn chỉnh dùng cả khối (kể cả câu không dùng) để có nhiều điểm tựa
+    const pos = refineBlock(patch, rows, R, sp)
+    for (const row of mine) {
+      const centers = row.opts.map((_, i) => pos(row, i))
+      const scores = centers.map((c) => fillScore(patch, c, R))
+      const rings = centers.map((c) => ringOnPatch(patch, c.x, c.y, R))
+      detail.push({ row, centers, scores, rings, chosen: null, flagged: false })
+    }
+  }
+
+  // Ngưỡng thích nghi theo cả phiếu: mức mực = trung vị các ô tô rõ
+  const all = detail.flatMap((d) => d.scores)
+  const marked = all.filter((v) => v >= 0.3).sort((a, b) => a - b)
+  const inkLevel = marked.length ? marked[Math.floor(marked.length / 2)] : 0.6
+  const hi = Math.max(0.24, Math.min(0.42, inkLevel * 0.5))
+  const lo = 0.13
+
+  // Độ rõ viền ô trống ở vị trí đã dò (căn đúng: viền rõ; lệch hàng/cột: gần như mất viền)
+  const emptyRings = detail
+    .flatMap((d) => d.scores.map((v, i) => (v < lo ? d.rings[i] : NaN)))
+    .filter((v) => Number.isFinite(v))
+    .sort((a, b) => a - b)
+  const ringRef = emptyRings.length ? emptyRings[Math.floor(emptyRings.length / 2)] : 0
+
+  const p1: (string | null)[] = Array.from({ length: opt.n1 }, () => null)
+  const p2: (boolean | null)[][] = Array.from({ length: opt.n2 }, () => [null, null, null, null])
+  const flags: Record<string, string> = {}
+  const LET = ['A', 'B', 'C', 'D']
+  for (const d of detail) {
+    const { row, scores } = d
+    const name = (i: number) => (row.part === 1 ? LET[i] : i === 0 ? 'Đúng' : 'Sai')
+    const order = scores.map((v, i) => ({ v, i })).sort((a, b) => b.v - a.v)
+    const on = order.filter((o) => o.v >= hi)
+    const mid = order.filter((o) => o.v >= lo && o.v < hi)
+    let chosen: number | null = null
+    let why = ''
+    if (on.length === 1) {
+      chosen = on[0].i
+      if (mid.length && on[0].v < mid[0].v * 2.2)
+        why = `Ô ${name(on[0].i)} tô đậm nhưng ô ${name(mid[0].i)} có vết mờ (tẩy chưa sạch?)`
+    } else if (on.length >= 2) {
+      // tô 2 ô: nếu một ô đậm vượt trội (ô kia là vết tẩy đậm) vẫn đánh dấu để giáo viên quyết
+      chosen = null
+      why = `Tô ${on.length} ô (${on.map((o) => name(o.i)).join(', ')})`
+    } else if (mid.length) {
+      why = `Ô ${name(mid[0].i)} tô mờ / có vết tẩy — chưa chắc học sinh chọn`
+    }
+    // Vị trí ô không khớp chắc (giấy cong / nhoè / che khuất) -> không đoán, để giáo viên xem
+    if (!why && ringRef > 20) {
+      const er = scores.map((v, i) => (v < lo ? d.rings[i] : NaN)).filter((v) => Number.isFinite(v)).sort((a, b) => a - b)
+      const weak = er.length > 0 && er[Math.floor((er.length - 1) / 2)] < ringRef * 0.3
+      if (weak) why = chosen === null ? 'Không thấy rõ các ô của hàng này (ảnh mờ / giấy cong / bị che) — kiểm tra lại' : 'Vị trí ô hàng này chưa khớp chắc — kiểm tra lại'
+    }
+    d.chosen = chosen
+    const id = row.part === 1 ? `1.${row.q}` : `2.${row.q}${'abcd'[row.sub ?? 0]}`
+    if (why) {
+      d.flagged = true
+      flags[id] = why
+    }
+    if (row.part === 1) p1[row.q - 1] = chosen === null ? null : LET[chosen]
+    else p2[row.q - 1][row.sub ?? 0] = chosen === null ? null : chosen === 0
+  }
+  return { p1, p2, flags, detail, H, quality, inkLevel }
+}
+
+function spacingOf(rows: BubbleRow[]): number {
+  let best = Infinity
+  const pts = rows.flatMap((r) => r.opts)
+  for (let i = 0; i < pts.length; i++)
+    for (let j = i + 1; j < pts.length; j++) {
+      const d = Math.hypot(pts[i].x - pts[j].x, pts[i].y - pts[j].y)
+      if (d > 1e-6 && d < best) best = d
+    }
+  return Number.isFinite(best) ? best : 30
+}
+
+/** Ảnh nắn phẳng một vùng (để cắt phần viết tay gửi AI, hoặc vẽ ảnh đối chiếu) */
+export function warpRegion(g: Gray, H: number[], r: { x: number; y: number; w: number; h: number }, scale: number): Gray {
+  return warp(g, H, r.x, r.y, r.w, r.h, scale)
+}
+

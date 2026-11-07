@@ -178,7 +178,7 @@ export default function App() {
         </div>
       )}
 
-      <header className="topbar">
+      <header className="topbar" style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'flex-start' }}>
         <div className="topbar__brand">
           <SchoolLogo />
           <div>
@@ -186,6 +186,23 @@ export default function App() {
             <p>Đẩy giáo án Word gốc, AI soạn lại theo khung hiện hành, có cột riêng năng lực số &amp; giáo dục hòa nhập.</p>
           </div>
         </div>
+        <a
+          href="/cham-phieu"
+          style={{
+            marginLeft: 'auto',
+            alignSelf: 'center',
+            background: 'linear-gradient(135deg, #4a63c9, #202d5e)',
+            color: '#fff',
+            padding: '10px 18px',
+            borderRadius: 999,
+            fontWeight: 600,
+            textDecoration: 'none',
+            whiteSpace: 'nowrap',
+          }}
+          title="Chấm phiếu tô ô (cần tài khoản giáo viên đã được duyệt)"
+        >
+          📷 Chấm phiếu
+        </a>
       </header>
 
       <section className="card header-note-card">
