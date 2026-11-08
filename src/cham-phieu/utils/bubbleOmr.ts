@@ -5,7 +5,8 @@
  * ổn định, không "đoán". Các bước:
  *   1. Ảnh -> ảnh xám (lấy kênh tối nhất để mực xanh cũng thành đậm), thu nhỏ hợp lí.
  *   2. Nhị phân hoá cục bộ -> tìm các ô vuông đen ■ (mốc định vị).
- *   3. Thử mọi cách chọn 4 mốc góc, giữ cách khớp mẫu phiếu tốt nhất (đúng cả khi ảnh xoay).
+ *   3. Tìm khung phiếu: thử 4 mốc góc; mốc bị che / dính đường kẻ / mờ thì chỉ cần 3 mốc góc + 1 mốc phụ
+ *      (phân biệt mốc VUÔNG với ô tròn đã tô), thử thêm ở độ phân giải thấp hơn; đúng cả khi ảnh xoay.
  *   4. Nắn phẳng (phép biến đổi phối cảnh) về hệ toạ độ chuẩn của mẫu phiếu.
  *   5. Từng khối ô: dò lại tâm ô thật (giấy cong, in lệch vẫn bám đúng).
  *   6. Đo độ đậm lòng mỗi ô, so với nền giấy tại chỗ -> chọn đáp án;
@@ -323,11 +324,228 @@ function markerCandidates(g: Gray): Cand[] {
   return out.slice(0, 90)
 }
 
+/** Phép affine (6 hệ số) biến 3 điểm mẫu -> 3 điểm ảnh: x' = a x + b y + c, y' = d x + e y + f */
+function affine3(src: Pt[], dst: Pt[]): number[] | null {
+  const A = src.map((p) => [p.x, p.y, 1])
+  const sx = solve(A, dst.map((q) => q.x))
+  const sy = solve(A, dst.map((q) => q.y))
+  return sx && sy ? [...sx, ...sy] : null
+}
+
+/** Ma trận đồng nhất từ n ≥ 4 cặp điểm (bình phương tối thiểu, có chuẩn hoá toạ độ cho ổn định số) */
+export function homographyLS(src: Pt[], dst: Pt[]): number[] | null {
+  if (src.length < 4) return null
+  if (src.length === 4) return homography(src, dst)
+  const norm = (ps: Pt[]) => {
+    const mx = ps.reduce((s, p) => s + p.x, 0) / ps.length
+    const my = ps.reduce((s, p) => s + p.y, 0) / ps.length
+    const d = ps.reduce((s, p) => s + Math.hypot(p.x - mx, p.y - my), 0) / ps.length || 1
+    const k = Math.SQRT2 / d
+    return { k, mx, my, pts: ps.map((p) => ({ x: (p.x - mx) * k, y: (p.y - my) * k })) }
+  }
+  const S = norm(src),
+    D = norm(dst)
+  const AtA = Array.from({ length: 8 }, () => new Array(8).fill(0))
+  const Atb = new Array(8).fill(0)
+  const add = (row: number[], v: number) => {
+    for (let i = 0; i < 8; i++) {
+      Atb[i] += row[i] * v
+      for (let j = 0; j < 8; j++) AtA[i][j] += row[i] * row[j]
+    }
+  }
+  S.pts.forEach((p, i) => {
+    const q = D.pts[i]
+    add([p.x, p.y, 1, 0, 0, 0, -q.x * p.x, -q.x * p.y], q.x)
+    add([0, 0, 0, p.x, p.y, 1, -q.y * p.x, -q.y * p.y], q.y)
+  })
+  const h = solve(AtA, Atb)
+  if (!h) return null
+  // H = Td^-1 · Hn · Ts
+  const Hn = [...h, 1]
+  const Ts = [S.k, 0, -S.k * S.mx, 0, S.k, -S.k * S.my, 0, 0, 1]
+  const Tdi = [1 / D.k, 0, D.mx, 0, 1 / D.k, D.my, 0, 0, 1]
+  const mul = (X: number[], Y: number[]) => {
+    const R = new Array(9).fill(0)
+    for (let i = 0; i < 3; i++) for (let j = 0; j < 3; j++) for (let k = 0; k < 3; k++) R[i * 3 + j] += X[i * 3 + k] * Y[k * 3 + j]
+    return R
+  }
+  const Hm = mul(Tdi, mul(Hn, Ts))
+  return Hm.map((v) => v / Hm[8])
+}
+
 /**
- * Chọn bộ mốc khớp mẫu tốt nhất. Thử mọi bộ 3 (trên-trái, trên-phải, dưới-trái), dự đoán mốc
- * dưới-phải, tính H rồi chấm điểm: số mốc phụ khớp + độ đều kích thước + vòng tròn ô tô hiện rõ.
+ * Chọn bộ mốc khớp mẫu tốt nhất.
+ * Phiếu có nhiều mốc (phiếu trường: 6 ô ■). Chỉ cần thấy 3 mốc góc bất kì + ít nhất 1 mốc nữa là định vị được —
+ * mốc bị ngón tay che, dính vào đường kẻ khung, mờ… vẫn chấm được. Thử mọi cách gán 3 mốc ảnh cho 3 mốc góc,
+ * dự đoán vị trí các mốc còn lại, rồi tính H bằng bình phương tối thiểu trên mọi mốc khớp.
+ * Điểm chọn: độ rõ vòng tròn ô tô ở đúng chỗ (chính), số mốc khớp (phụ).
  */
-function locate(g: Gray, t: SheetTemplate): { H: number[]; quality: number } {
+function locateRobust(g: Gray, t: SheetTemplate, squareOnly = false): { H: number[]; quality: number } {
+  // squareOnly: chỉ xét hình VUÔNG đặc (mốc ■), bỏ ô tròn đã tô — tròn đặc có tỉ số diện tích/phương sai ≈ 6,28, vuông ≈ 6,0
+  const all = markerCandidates(g)
+  const cands = squareOnly ? all.filter((c) => c.fill < 6.17) : all
+  if (cands.length < 4) throw new OmrError('Không tìm thấy đủ các ô vuông đen định vị (■) trên ảnh.')
+  const allMarks: Pt[] = [...t.corners, ...t.extraMarkers]
+  const roleSets = [
+    [0, 1, 2],
+    [0, 1, 3],
+    [0, 2, 3],
+    [1, 2, 3],
+  ]
+  const probeRows = t.rows.filter((_, i) => i % 3 === 0).slice(0, 40)
+  const longSide = Math.max(g.w, g.h)
+  const n = cands.length
+  const tried = new Set<string>()
+  const hyps: { H: number[]; matched: number }[] = []
+
+  for (const roles of roleSets) {
+    const [P, Q, R] = roles.map((i) => t.corners[i])
+    const tPQ = Math.hypot(Q.x - P.x, Q.y - P.y)
+    const tPR = Math.hypot(R.x - P.x, R.y - P.y)
+    for (let a = 0; a < n; a++)
+      for (let b = 0; b < n; b++) {
+        if (b === a) continue
+        const A = cands[a],
+          B = cands[b]
+        const dAB = Math.hypot(B.x - A.x, B.y - A.y)
+        if (dAB < longSide * 0.15) continue
+        for (let c = 0; c < n; c++) {
+          if (c === a || c === b) continue
+          const C = cands[c]
+          const dAC = Math.hypot(C.x - A.x, C.y - A.y)
+          const rr = dAB / dAC / (tPQ / tPR)
+          if (rr < 0.6 || rr > 1.65) continue
+          const M = affine3([P, Q, R], [A, B, C])
+          if (!M) continue
+          const [ma, mb, , md, me] = M
+          const det = ma * me - mb * md
+          if (det <= 0) continue // ảnh lật gương -> sai
+          const sx = Math.hypot(ma, md),
+            sy = Math.hypot(mb, me)
+          if (sx / sy < 0.6 || sx / sy > 1.65) continue
+          if (Math.abs(ma * mb + md * me) / (sx * sy) > 0.35) continue // lệch góc quá nhiều
+          const unit = Math.sqrt(det)
+          const expSide = t.markerSize * unit
+          // ghép các mốc còn lại theo dự đoán affine
+          const src: Pt[] = [P, Q, R]
+          const dst: Pt[] = [A, B, C]
+          const used = new Set([a, b, c])
+          // dung sai nhỏ: giấy cong lệch vài mm vẫn khớp, nhưng không "bắt nhầm" ô tô đậm gần đó
+          const tol = Math.max(expSide * 1.6, 0.035 * Math.min(sx, sy) * 1000)
+          const triSide = (A.side + B.side + C.side) / 3
+          for (const m of allMarks) {
+            if (m === P || m === Q || m === R) continue
+            const px = M[0] * m.x + M[1] * m.y + M[2],
+              py = M[3] * m.x + M[4] * m.y + M[5]
+            let bi = -1,
+              bd = Infinity
+            for (let k = 0; k < n; k++) {
+              if (used.has(k)) continue
+              const e = Math.hypot(cands[k].x - px, cands[k].y - py)
+              if (e < bd) {
+                bd = e
+                bi = k
+              }
+            }
+            if (bi >= 0 && bd < tol && cands[bi].side > triSide * 0.65 && cands[bi].side < triSide * 1.5) {
+              used.add(bi)
+              src.push(m)
+              dst.push(cands[bi])
+            }
+          }
+          if (src.length < 4) continue
+          const sides = [...used].map((k) => cands[k].side)
+          const sMax = Math.max(...sides),
+            sMin = Math.min(...sides)
+          if (sMax > sMin * 1.9) continue
+          const avgSide = sides.reduce((s2, v) => s2 + v, 0) / sides.length
+          if (avgSide < expSide * 0.45 || avgSide > expSide * 2) continue
+          // tính H; mốc nào lệch nhiều (ghép nhầm) thì bỏ rồi tính lại, miễn còn ≥ 4 mốc
+          const errLim = Math.max(expSide * 1.5, longSide * 0.012)
+          let H: number[] | null = null
+          while (src.length >= 4) {
+            H = homographyLS(src, dst)
+            if (!H) break
+            let wi = -1,
+              we = 0
+            src.forEach((p, i) => {
+              const q = applyH(H!, p)
+              const e = Math.hypot(q.x - dst[i].x, q.y - dst[i].y)
+              if (e > we) {
+                we = e
+                wi = i
+              }
+            })
+            if (we <= errLim) break
+            if (wi < 3 || src.length === 4) {
+              H = null // một trong 3 mốc gốc lệch -> bộ này sai
+              break
+            }
+            src.splice(wi, 1)
+            dst.splice(wi, 1)
+          }
+          if (!H) continue
+          // cùng một cách ghép mốc có thể gặp lại qua bộ 3 khác -> bỏ trùng
+          const key = src
+            .map((p, i) => `${p.x},${p.y}>${Math.round(dst[i].x)},${Math.round(dst[i].y)}`)
+            .sort()
+            .join('|')
+          if (tried.has(key)) continue
+          tried.add(key)
+          hyps.push({ H, matched: src.length })
+        }
+      }
+  }
+  if (!hyps.length)
+    throw new OmrError(
+      'Không xác định được khung phiếu: chưa thấy đủ các ô vuông đen ■ (cần ít nhất 4 ô, trong đó 3 ô ở góc). Hãy chụp thẳng, rõ, lọt trọn cả vùng trả lời trắc nghiệm.',
+    )
+  // chỉ chấm độ rõ vòng tròn cho các giả thuyết khớp nhiều mốc nhất (tiết kiệm thời gian)
+  // Lọc nhanh bằng vài hàng ô, rồi chấm kĩ các giả thuyết tốt nhất trên nhiều hàng hơn
+  const maxM = Math.max(...hyps.map((h) => h.matched))
+  const quickRows = t.rows.filter((_, i) => i % 7 === 0).slice(0, 14)
+  const pool = hyps
+    .filter((h) => h.matched >= Math.max(4, maxM - 2))
+    .sort((x, y) => y.matched - x.matched)
+    .slice(0, 400)
+    .map((h) => ({ ...h, q: ringEvidence(g, h.H, t, quickRows) + 0.02 * h.matched }))
+    .sort((x, y) => y.q - x.q)
+    .slice(0, 8)
+  let best: { H: number[]; score: number } | null = null
+  for (const h of pool) {
+    const score = ringEvidence(g, h.H, t, probeRows) + 0.02 * h.matched
+    if (!best || score > best.score) best = { H: h.H, score }
+  }
+  return { H: best!.H, quality: ringEvidence(g, best!.H, t, t.rows) }
+}
+
+/** Thu nhỏ ảnh xám (trung bình ô) */
+function downscale(g: Gray, f: number): Gray {
+  const W = Math.max(1, Math.round(g.w * f)),
+    Hh = Math.max(1, Math.round(g.h * f))
+  const out = new Float32Array(W * Hh)
+  const inv = 1 / f
+  for (let y = 0; y < Hh; y++) {
+    const y0 = Math.floor(y * inv),
+      y1 = Math.min(g.h, Math.max(y0 + 1, Math.floor((y + 1) * inv)))
+    for (let x = 0; x < W; x++) {
+      const x0 = Math.floor(x * inv),
+        x1 = Math.min(g.w, Math.max(x0 + 1, Math.floor((x + 1) * inv)))
+      let s = 0,
+        c = 0
+      for (let yy = y0; yy < y1; yy++)
+        for (let xx = x0; xx < x1; xx++) {
+          s += g.d[yy * g.w + xx]
+          c++
+        }
+      out[y * W + x] = s / c
+    }
+  }
+  return { w: W, h: Hh, d: out }
+}
+
+/** Đường nhanh: thấy đủ 4 mốc góc + mọi mốc phụ (ảnh chụp tốt — đa số trường hợp) */
+function locateFast(g: Gray, t: SheetTemplate): { H: number[]; quality: number } {
   const cands = markerCandidates(g)
   if (cands.length < 4) throw new OmrError('Không tìm thấy đủ 4 ô vuông đen định vị (■) trên ảnh.')
   const [TL, TR, BL, BR] = t.corners
@@ -393,9 +611,49 @@ function locate(g: Gray, t: SheetTemplate): { H: number[]; quality: number } {
   if (!best) throw new OmrError('Không xác định được khung phiếu: chưa thấy đủ các ô vuông đen ■ đúng vị trí. Hãy chụp thẳng, rõ, lọt trọn cả tờ phiếu (đủ 4 góc).')
   // kiểm tra lại trên toàn bộ ô của mẫu
   best.quality = ringEvidence(g, best.H, t, t.rows)
-  if (best.quality < 0.9)
-    throw new OmrError('Ảnh không khớp mẫu phiếu đã chọn (không thấy các ô tròn ở vị trí cần). Kiểm tra lại loại phiếu hoặc chụp lại.')
   return { H: best.H, quality: best.quality }
+}
+
+/**
+ * Định vị phiếu, theo thứ tự:
+ *  1. Đường nhanh (đủ 4 mốc góc + mốc phụ) — ảnh chụp tốt.
+ *  2. Đường bền: chỉ cần 3 mốc góc + 1 mốc bất kì (mốc bị che, dính đường kẻ, mờ).
+ *  3. Lặp lại ở độ phân giải thấp hơn (ảnh lớn đôi khi làm mốc ■ vỡ nét / dính chữ bên cạnh).
+ * Lấy kết quả có vòng tròn ô tô hiện rõ nhất; đổi H về toạ độ ảnh gốc.
+ */
+function locateMulti(g: Gray, t: SheetTemplate): { H: number[]; quality: number } {
+  const OK = 0.9
+  let best: { H: number[]; quality: number } | null = null
+  let firstErr: Error | null = null
+  const consider = (r: { H: number[]; quality: number }, f: number) => {
+    const H = f === 1 ? r.H : r.H.map((v, i) => (i < 6 ? v / f : v))
+    if (!best || r.quality > best.quality) best = { H, quality: r.quality }
+  }
+  const attempt = (fn: (x: Gray, tt: SheetTemplate) => { H: number[]; quality: number }, img: Gray, f: number) => {
+    try {
+      consider(fn(img, t), f)
+    } catch (e) {
+      if (!firstErr) firstErr = e as Error
+    }
+    return !!best && (best as { quality: number }).quality >= OK
+  }
+  if (attempt(locateFast, g, 1)) return best!
+  const robustSq = (x: Gray, tt: SheetTemplate) => locateRobust(x, tt, true)
+  if (attempt(robustSq, g, 1)) return best!
+  if (attempt(locateRobust, g, 1)) return best!
+  const long = Math.max(g.w, g.h)
+  for (const side of [1400, 1000]) {
+    if (side >= long * 0.85) continue
+    const f = side / long
+    const small = downscale(g, f)
+    if (attempt(locateFast, small, f)) return best!
+    if (attempt(robustSq, small, f)) return best!
+    if (attempt(locateRobust, small, f)) return best!
+  }
+  if (best && (best as { quality: number }).quality >= 0.8) return best
+  if (best)
+    throw new OmrError('Ảnh không khớp mẫu phiếu đã chọn (không thấy rõ các ô tròn ở vị trí cần). Kiểm tra lại loại phiếu, hoặc chụp lại gần hơn, thẳng hơn, đủ sáng.')
+  throw firstErr || new OmrError('Không định vị được phiếu.')
 }
 
 /** Đọc dãy bit: ô vuông nhỏ đặc = 1, rỗng = 0 (so độ sáng lòng ô với nền quanh) */
@@ -645,7 +903,7 @@ export interface ReadBubblesOptions {
 }
 
 export function readBubbles(g: Gray, t: SheetTemplate, opt: ReadBubblesOptions): BubbleRead {
-  const { H, quality } = locate(g, t)
+  const { H, quality } = locateMulti(g, t)
   if (t.code) {
     const v = readCode(g, H, t.code.bits, t.code.size)
     if (v !== t.code.value)
