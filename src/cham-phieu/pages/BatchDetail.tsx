@@ -160,6 +160,7 @@ export default function TeacherPaperGradingDetail() {
   const [roster, setRoster] = useState<StudentLite[]>([])
   const [loadError, setLoadError] = useState('')
   const [tab, setTab] = useState<'key' | 'grade' | 'result'>('key')
+  const [rescoring, setRescoring] = useState(false)
   const firstLoad = useRef(true)
 
   const cfg = batch?.config
@@ -209,6 +210,41 @@ export default function TeacherPaperGradingDetail() {
       </div>
     )
 
+  /** Đổi cách tính điểm Phần 2 (thang Bộ / chia đều) và chấm lại mọi phiếu đã lưu theo đáp án hiện có */
+  async function changeTfMethod(m: PaperConfig['tfMethod']) {
+    if (!batch || !cfg || m === cfg.tfMethod) return
+    const label = m === 'ministry_partial' ? 'thang Bộ GDĐT' : 'chia đều'
+    if (sheets.length && !confirm(`Đổi Phần 2 sang ${label} và chấm lại ${sheets.length} phiếu đã lưu?`)) return
+    setRescoring(true)
+    try {
+      const next: PaperConfig = { ...cfg, tfMethod: m }
+      const { error } = await supabase.from('paper_batches').update({ config: next }).eq('id', batch.id)
+      if (error) throw error
+      let n = 0
+      for (const s of sheets) {
+        const key = keys.find((k) => k.ma_de === s.ma_de)
+        if (!key) continue
+        const sc = scorePaper(s.answers, key.answers, next)
+        const r = await supabase
+          .from('paper_sheets')
+          .update({
+            score: sc.total,
+            part_scores: { p1: sc.p1, p2: sc.p2, p3: sc.p3, total: sc.total, max: sc.max },
+            updated_at: new Date().toISOString(),
+          })
+          .eq('id', s.id)
+        if (r.error) throw r.error
+        n++
+      }
+      await loadAll()
+      if (sheets.length) alert(`Đã đổi sang ${label} và chấm lại ${n} phiếu.`)
+    } catch (e) {
+      alert((e as Error).message)
+    } finally {
+      setRescoring(false)
+    }
+  }
+
   /** Chọn nhầm loại phiếu khi tạo đợt: đổi phiếu lớp <-> phiếu trường (đáp án giữ nguyên) */
   async function switchSheet() {
     if (!batch || !cfg) return
@@ -236,7 +272,17 @@ export default function TeacherPaperGradingDetail() {
       <h1 style={{ marginBottom: 4 }}>{batch.title}</h1>
       <p style={{ color: 'var(--muted)', marginTop: 0 }}>
         Phần 1: {cfg.n1} câu × {cfg.p1}đ · Phần 2: {cfg.n2} câu × {cfg.p2}đ (
-        {cfg.tfMethod === 'ministry_partial' ? 'thang Bộ GDĐT' : 'chia đều'}) · Phần 3: {cfg.n3} câu × {cfg.p3}đ
+        <select
+          value={cfg.tfMethod}
+          disabled={rescoring}
+          onChange={(e) => changeTfMethod(e.target.value as PaperConfig['tfMethod'])}
+          title="Đổi cách tính điểm Phần 2 — các phiếu đã lưu được chấm lại ngay"
+          style={{ display: 'inline-block', width: 'auto', margin: '0 2px', padding: '2px 6px', fontSize: 13 }}
+        >
+          <option value="ministry_partial">thang Bộ GDĐT (1 ý 10%, 2 ý 25%, 3 ý 50%, 4 ý 100%)</option>
+          <option value="equal_split">chia đều (mỗi ý 25%)</option>
+        </select>
+        {rescoring && ' đang chấm lại…'}) · Phần 3: {cfg.n3} câu × {cfg.p3}đ
         {cfg.identity !== 'phach' && !batch.class_id && ' · Không gắn lớp (không khớp được danh sách học sinh)'}
         <br />
         Phiếu:{' '}
