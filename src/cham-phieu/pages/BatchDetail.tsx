@@ -36,6 +36,7 @@ import {
   tfLabel,
 } from '../utils/omr'
 import { openPrintSheets } from '../utils/printSheets'
+import { SCHOOL_LIMITS, autoPaperSize } from '../utils/sheetTemplates'
 
 // ---------------- KIỂU DỮ LIỆU TRANG ----------------
 
@@ -208,6 +209,21 @@ export default function TeacherPaperGradingDetail() {
       </div>
     )
 
+  /** Chọn nhầm loại phiếu khi tạo đợt: đổi phiếu lớp <-> phiếu trường (đáp án giữ nguyên) */
+  async function switchSheet() {
+    if (!batch || !cfg) return
+    const toSchool = cfg.sheet !== 'school'
+    if (toSchool && (cfg.n1 > SCHOOL_LIMITS.n1 || cfg.n2 > SCHOOL_LIMITS.n2 || cfg.n3 > SCHOOL_LIMITS.n3))
+      return alert(`Phiếu của trường chỉ có ${SCHOOL_LIMITS.n1} – ${SCHOOL_LIMITS.n2} – ${SCHOOL_LIMITS.n3} câu, đợt chấm này có ${cfg.n1} – ${cfg.n2} – ${cfg.n3} câu.`)
+    if (sheets.length) return alert('Đợt chấm đã có phiếu được lưu nên không đổi loại phiếu được. Hãy tạo đợt chấm mới.')
+    const next: PaperConfig = toSchool
+      ? { ...cfg, sheet: 'school', identity: 'phach', paper: undefined }
+      : { ...cfg, sheet: 'class', identity: 'name', paper: autoPaperSize(cfg) }
+    const { error } = await supabase.from('paper_batches').update({ config: next }).eq('id', batch.id)
+    if (error) return alert(error.message)
+    await loadAll()
+  }
+
   const tabBtn = (t: typeof tab, label: string) => (
     <button className={`btn ${tab === t ? '' : 'secondary'}`} onClick={() => setTab(t)}>
       {label}
@@ -234,6 +250,11 @@ export default function TeacherPaperGradingDetail() {
         {cfg.sheet === 'class' && (
           <button className="btn secondary" style={{ padding: '3px 10px', fontSize: 12, marginLeft: 10 }} onClick={() => openPrintSheets(cfg, batch.title)}>
             🖨 In / tải PDF mẫu phiếu
+          </button>
+        )}
+        {isBubbleSheet(cfg) && !sheets.length && (
+          <button className="btn secondary" style={{ padding: '3px 10px', fontSize: 12, marginLeft: 10 }} onClick={switchSheet}>
+            {cfg.sheet === 'school' ? '↔ Đổi sang phiếu lớp (web in)' : '↔ Đổi sang phiếu của trường'}
           </button>
         )}
       </p>

@@ -906,6 +906,10 @@ export function readBubbles(g: Gray, t: SheetTemplate, opt: ReadBubblesOptions):
   const { H, quality } = locateMulti(g, t)
   if (t.code) {
     const v = readCode(g, H, t.code.bits, t.code.size)
+    if (v === 0)
+      throw new OmrError(
+        'Ảnh này không có dãy ô mã của phiếu lớp (do web in) — có thể là PHIẾU CỦA TRƯỜNG. Nếu đúng vậy, bấm "Đổi sang phiếu của trường" ở đầu trang rồi bấm Đọc lại.',
+      )
     if (v !== t.code.value)
       throw new OmrError(
         `Phiếu này in cho ${t.code.describe(v)}, không khớp đợt chấm (${t.code.describe(t.code.value)}). Hãy dùng đúng mẫu phiếu tải từ đợt chấm này.`,

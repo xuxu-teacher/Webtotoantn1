@@ -694,6 +694,22 @@ function pxPerUnit(H: number[], t: SheetTemplate): number {
   return Math.hypot(q.x - p.x, q.y - p.y) / Math.hypot(b.x - a.x, b.y - a.y)
 }
 
+/**
+ * Đọc thất bại: thử xem ảnh có phải LOẠI PHIẾU KIA không (phiếu trường <-> phiếu lớp do web in),
+ * để báo đúng lỗi thay vì "không khớp mẫu".
+ */
+function mismatchHint(g: Gray, cfg: PaperConfig): string {
+  try {
+    if (cfg.sheet === 'class') {
+      readBubbles(g, schoolTemplate(), { n1: 1, n2: 0 })
+      return 'Ảnh này là PHIẾU CỦA TRƯỜNG (40 – 6 – 8 câu), nhưng đợt chấm đang chọn "Phiếu tô ô do web tạo". Bấm "Đổi sang phiếu của trường" ở đầu trang rồi bấm Đọc lại.'
+    }
+  } catch {
+    return ''
+  }
+  return ''
+}
+
 /** Ghép vùng đầu phiếu + Phần III (đã nắn thẳng) thành 1 ảnh JPEG gửi AI */
 function handwritingImage(g: Gray, br: BubbleRead, t: SheetTemplate): string {
   const ppu = pxPerUnit(br.H, t)
@@ -824,7 +840,7 @@ export async function readBubbleSheet(
   try {
     br = readBubbles(g, t, { n1: cfg.n1, n2: cfg.n2 })
   } catch (e) {
-    if (e instanceof OmrError) throw new Error(e.message)
+    if (e instanceof OmrError) throw new Error(mismatchHint(g, cfg) || e.message)
     throw e
   }
   const answers = emptyAnswers(cfg)
