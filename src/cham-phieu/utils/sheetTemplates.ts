@@ -319,3 +319,40 @@ export function layoutToSvg(l: ClassLayout, title = ''): string {
     )
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${l.width}mm" height="${l.height}mm" viewBox="0 0 ${l.width} ${l.height}">${parts.join('')}</svg>`
 }
+
+// ======================================================================
+// PHIẾU 35 CÂU A–D KHÔNG CÓ Ô VUÔNG ĐỊNH VỊ (VD phiếu kiểm tra tiếng Anh: 4 cột 10–10–10–5 câu)
+//   Đơn vị: 10 = khoảng cách 2 ô cạnh nhau (A→B). Máy tự tìm lưới ô tròn, không cần mốc ■.
+// ======================================================================
+
+const G35_UNIT = 10
+const G35_GAP = 5.04 // khoảng cách từ ô A cột này tới ô A cột kế (theo số ô)
+const G35_ROW = 0.9 // khoảng cách hàng (theo số ô)
+export const GRID35_LIMITS = { n1: 35, n2: 0, n3: 0 }
+
+export function grid35Template(): SheetTemplate {
+  const rows: BubbleRow[] = []
+  const X = (g: number, o: number) => G35_UNIT * (g * G35_GAP + o)
+  const Y = (r: number) => G35_UNIT * G35_ROW * r
+  for (let q = 1; q <= 35; q++) {
+    const g = Math.floor((q - 1) / 10),
+      r = (q - 1) % 10
+    rows.push({ part: 1, q, block: `p1g${g}`, opts: [0, 1, 2, 3].map((o) => ({ x: X(g, o), y: Y(r) })) })
+  }
+  return {
+    kind: 'grid',
+    gridSpec: { groups: [10, 10, 10, 5], groupGap: G35_GAP, rowStep: G35_ROW, unit: G35_UNIT },
+    corners: [
+      { x: X(0, 0), y: Y(0) },
+      { x: X(3, 3), y: Y(0) },
+      { x: X(0, 0), y: Y(9) },
+      { x: X(2, 3), y: Y(9) },
+    ],
+    extraMarkers: [],
+    markerSize: 3,
+    bubbleR: 2.3,
+    rows,
+    crops: [{ id: 'header', x: -70, y: -62, w: 285, h: 40 }],
+    frame: { x: -28, y: -14, w: 238, h: 108 },
+  }
+}

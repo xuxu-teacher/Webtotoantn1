@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../auth'
 import { DEFAULT_CONFIG, PaperConfig, SheetKind } from '../utils/omr'
-import { SCHOOL_LIMITS, autoPaperSize } from '../utils/sheetTemplates'
+import { GRID35_LIMITS, SCHOOL_LIMITS, autoPaperSize } from '../utils/sheetTemplates'
 
 interface BatchRow {
   id: string
@@ -64,6 +64,9 @@ export default function TeacherPaperGrading() {
       const L = SCHOOL_LIMITS
       if (cfg.n1 > L.n1 || cfg.n2 > L.n2 || cfg.n3 > L.n3)
         return setError(`Phiếu của trường có tối đa ${L.n1} câu Phần I, ${L.n2} câu Phần II, ${L.n3} câu Phần III.`)
+    } else if (cfg.sheet === 'grid35') {
+      if (cfg.n1 > GRID35_LIMITS.n1 || cfg.n2 || cfg.n3)
+        return setError(`Phiếu 35 câu chỉ có phần trắc nghiệm A–D: tối đa ${GRID35_LIMITS.n1} câu Phần 1, Phần 2 và Phần 3 phải bằng 0.`)
     } else if (cfg.n1 > 50 || cfg.n2 > 10 || cfg.n3 > 20) return setError('Tối đa 50 câu Phần 1, 10 câu Phần 2, 20 câu Phần 3.')
     if (cfg.n1 + cfg.n2 + cfg.n3 === 0) return setError('Đề phải có ít nhất 1 câu.')
     for (const k of ['p1', 'p2', 'p3'] as (keyof PaperConfig)[]) {
@@ -72,7 +75,7 @@ export default function TeacherPaperGrading() {
     }
     // Phiếu trường: nhận diện bằng phách; phiếu lớp: bằng họ tên, khổ giấy chọn tự động theo số câu
     const finalCfg: PaperConfig =
-      cfg.sheet === 'school'
+      cfg.sheet === 'school' || cfg.sheet === 'grid35'
         ? { ...cfg, identity: 'phach', paper: undefined }
         : { ...cfg, sheet: 'class', identity: 'name', paper: autoPaperSize(cfg) }
     setSaving(true)
@@ -112,7 +115,7 @@ export default function TeacherPaperGrading() {
               <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="VD: Kiểm tra giữa kì I – 12A1" required />
             </div>
             <div style={{ flex: 1, minWidth: 180 }}>
-              <label>{cfg.sheet === 'school' ? 'Lớp (không bắt buộc)' : 'Lớp (để máy khớp họ tên)'}</label>
+              <label>{cfg.sheet === 'class' ? 'Lớp (để máy khớp họ tên)' : 'Lớp (không bắt buộc)'}</label>
               <select value={classId} onChange={(e) => setClassId(e.target.value)}>
                 <option value="">— Không gắn lớp —</option>
                 {classes.map((c) => (
@@ -135,6 +138,11 @@ export default function TeacherPaperGrading() {
               [
                 ['class', '📝 Phiếu tô ô do web tạo', 'Bài kiểm tra tại lớp: đúng số câu của đề, có Họ tên – STT – Lớp – Mã đề. In từ trang đợt chấm.'],
                 ['school', '🏫 Phiếu của trường (đã cắt phách)', 'Phiếu in sẵn 40 – 6 – 8 câu của trường; nhận diện bài bằng Mã phách + Số phách.'],
+                [
+                  'grid35',
+                  '🔤 Phiếu 35 câu (chữ A B C D trong ô)',
+                  'Phiếu in sẵn 35 câu trắc nghiệm 4 cột (VD Tiếng Anh – Part A), không có ô vuông đen; có Mã đề thi + Mã phách. Chỉ chấm phần trắc nghiệm.',
+                ],
               ] as [SheetKind, string, string][]
             ).map(([k, label, desc]) => (
               <label
@@ -159,7 +167,9 @@ export default function TeacherPaperGrading() {
                     setCfg((c) =>
                       k === 'school'
                         ? { ...c, sheet: k, n1: Math.min(c.n1, SCHOOL_LIMITS.n1), n2: Math.min(c.n2, SCHOOL_LIMITS.n2), n3: Math.min(c.n3, SCHOOL_LIMITS.n3) }
-                        : { ...c, sheet: k },
+                        : k === 'grid35'
+                          ? { ...c, sheet: k, n1: GRID35_LIMITS.n1, n2: 0, n3: 0, p1: 0.2 }
+                          : { ...c, sheet: k },
                     )
                   }
                   style={{ width: 'auto', margin: '0 6px 0 0' }}
@@ -186,7 +196,7 @@ export default function TeacherPaperGrading() {
             </div>
             <div>
               <label>Phần 2 – số câu</label>
-              <input type="number" min={0} value={cfg.n2} onChange={(e) => num('n2', e.target.value)} />
+              <input type="number" min={0} value={cfg.n2} disabled={cfg.sheet === 'grid35'} onChange={(e) => num('n2', e.target.value)} />
             </div>
             <div>
               <label>Phần 2 – điểm tối đa/câu</label>
@@ -194,7 +204,7 @@ export default function TeacherPaperGrading() {
             </div>
             <div>
               <label>Phần 3 – số câu</label>
-              <input type="number" min={0} value={cfg.n3} onChange={(e) => num('n3', e.target.value)} />
+              <input type="number" min={0} value={cfg.n3} disabled={cfg.sheet === 'grid35'} onChange={(e) => num('n3', e.target.value)} />
             </div>
             <div>
               <label>Phần 3 – điểm/câu</label>
@@ -240,7 +250,15 @@ export default function TeacherPaperGrading() {
                     <Link to={`/cham-phieu/${b.id}`}>{b.title}</Link>
                   </td>
                   <td>{classes.find((c) => c.id === b.class_id)?.class_name || '—'}</td>
-                  <td>{b.config.sheet === 'school' ? 'Trường (phách)' : b.config.sheet === 'class' ? 'Tô ô – lớp' : 'Viết tay (cũ)'}</td>
+                  <td>
+                    {b.config.sheet === 'school'
+                      ? 'Trường (phách)'
+                      : b.config.sheet === 'grid35'
+                        ? '35 câu (phách)'
+                        : b.config.sheet === 'class'
+                          ? 'Tô ô – lớp'
+                          : 'Viết tay (cũ)'}
+                  </td>
                   <td>
                     {b.config.n1} – {b.config.n2} – {b.config.n3}
                   </td>

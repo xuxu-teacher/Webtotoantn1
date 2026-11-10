@@ -4,7 +4,7 @@
 -- Chạy lại nhiều lần vẫn an toàn.
 -- ============================================================
 
-create extension if not exists "uuid-ossp";
+-- (dùng gen_random_uuid() có sẵn trong Postgres, không cần extension)
 
 -- ---------- 1. TÀI KHOẢN GIÁO VIÊN ----------
 create table if not exists teachers (
@@ -65,14 +65,14 @@ create policy teachers_admin_delete on teachers for delete using (is_admin() and
 
 -- ---------- 2. LỚP + DANH SÁCH HỌC SINH (để khớp họ tên trên phiếu lớp) ----------
 create table if not exists classes (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   teacher_id uuid not null default auth.uid() references teachers(id) on delete cascade,
   class_name text not null,
   created_at timestamptz default now()
 );
 
 create table if not exists students (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   class_id uuid not null references classes(id) on delete cascade,
   teacher_id uuid not null default auth.uid() references teachers(id) on delete cascade,
   stt int,
@@ -84,16 +84,16 @@ create index if not exists idx_students_class on students(class_id, stt);
 
 -- ---------- 3. CHẤM PHIẾU ----------
 create table if not exists paper_batches (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   teacher_id uuid not null default auth.uid() references teachers(id) on delete cascade,
   class_id uuid references classes(id) on delete set null,
   title text not null,
-  config jsonb not null,          -- { n1, n2, n3, p1, p2, p3, tfMethod, sheet: 'school'|'class', identity: 'phach'|'name', paper: 'A4'|'A5' }
+  config jsonb not null,          -- { n1, n2, n3, p1, p2, p3, tfMethod, sheet: 'school'|'class'|'grid35', identity: 'phach'|'name', paper: 'A4'|'A5' }
   created_at timestamptz default now()
 );
 
 create table if not exists paper_keys (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   batch_id uuid not null references paper_batches(id) on delete cascade,
   teacher_id uuid not null default auth.uid() references teachers(id) on delete cascade,
   ma_de text not null,
@@ -103,7 +103,7 @@ create table if not exists paper_keys (
 );
 
 create table if not exists paper_sheets (
-  id uuid primary key default uuid_generate_v4(),
+  id uuid primary key default gen_random_uuid(),
   batch_id uuid not null references paper_batches(id) on delete cascade,
   teacher_id uuid not null default auth.uid() references teachers(id) on delete cascade,
   student_id uuid references students(id) on delete set null,
@@ -122,6 +122,10 @@ create table if not exists paper_sheets (
   created_at timestamptz default now(),
   updated_at timestamptz default now()
 );
+
+-- Bản cập nhật: lưu mã file ảnh phiếu trong Google Drive của giáo viên (KHÔNG ảnh hưởng các phiếu đã chấm)
+alter table paper_sheets add column if not exists image_drive_id text;
+alter table paper_sheets add column if not exists overlay_drive_id text;
 
 create index if not exists idx_paper_batches_teacher on paper_batches(teacher_id, created_at desc);
 create index if not exists idx_paper_keys_batch on paper_keys(batch_id);
@@ -164,3 +168,8 @@ create policy own_paper_sheets on paper_sheets for all
   using (teacher_id = auth.uid() and is_approved())
   with check (teacher_id = auth.uid() and is_approved()
     and exists (select 1 from paper_batches b where b.id = batch_id and b.teacher_id = auth.uid()));
+
+-- ---------- 5. QUYỀN TRUY CẬP API (phòng khi project tắt "tự cấp quyền cho bảng mới") ----------
+grant usage on schema public to anon, authenticated;
+grant select, insert, update, delete on teachers, classes, students, paper_batches, paper_keys, paper_sheets to authenticated;
+grant execute on function is_approved(), is_admin() to authenticated;

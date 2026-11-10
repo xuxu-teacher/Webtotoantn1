@@ -2,6 +2,7 @@ import { ChangeEvent, Fragment, useEffect, useMemo, useRef, useState } from 'rea
 import { Link, useParams } from 'react-router-dom'
 import * as XLSX from 'xlsx'
 import { supabase } from '../lib/supabase'
+import { connectDrive, disconnectDrive, driveConfigured, driveConnected, driveViewUrl, onDriveChange, uploadImage } from '../lib/drive'
 import { useAuth } from '../auth'
 import CameraCapture from '../components/CameraCapture'
 import PaperAnswerGrid from '../components/PaperAnswerGrid'
@@ -10,6 +11,7 @@ import {
   NameMatch,
   PaperAnswers,
   PaperConfig,
+  SheetKind,
   PartScores,
   ReadResult,
   StudentLite,
@@ -32,11 +34,12 @@ import {
   readKeyTable,
   readSheet,
   scorePaper,
+  shrinkJpeg,
   stripVN,
   tfLabel,
 } from '../utils/omr'
 import { openPrintSheets } from '../utils/printSheets'
-import { SCHOOL_LIMITS, autoPaperSize } from '../utils/sheetTemplates'
+import { GRID35_LIMITS, SCHOOL_LIMITS, autoPaperSize } from '../utils/sheetTemplates'
 
 // ---------------- KIỂU DỮ LIỆU TRANG ----------------
 
@@ -69,6 +72,9 @@ interface SheetRow {
   ma_phach?: string | null
   so_phach?: string | null
   stt?: string | null
+  /** mã file ảnh phiếu gốc / ảnh máy đọc trong Google Drive của giáo viên */
+  image_drive_id?: string | null
+  overlay_drive_id?: string | null
 }
 
 type ItemStatus = 'waiting' | 'reading' | 'review' | 'saved' | 'error'
@@ -245,16 +251,19 @@ export default function TeacherPaperGradingDetail() {
     }
   }
 
-  /** Chọn nhầm loại phiếu khi tạo đợt: đổi phiếu lớp <-> phiếu trường (đáp án giữ nguyên) */
-  async function switchSheet() {
-    if (!batch || !cfg) return
-    const toSchool = cfg.sheet !== 'school'
-    if (toSchool && (cfg.n1 > SCHOOL_LIMITS.n1 || cfg.n2 > SCHOOL_LIMITS.n2 || cfg.n3 > SCHOOL_LIMITS.n3))
-      return alert(`Phiếu của trường chỉ có ${SCHOOL_LIMITS.n1} – ${SCHOOL_LIMITS.n2} – ${SCHOOL_LIMITS.n3} câu, đợt chấm này có ${cfg.n1} – ${cfg.n2} – ${cfg.n3} câu.`)
+  /** Chọn nhầm loại phiếu khi tạo đợt: đổi loại phiếu (đáp án giữ nguyên) — chỉ khi chưa lưu phiếu nào */
+  async function switchSheet(to: SheetKind) {
+    if (!batch || !cfg || to === cfg.sheet) return
     if (sheets.length) return alert('Đợt chấm đã có phiếu được lưu nên không đổi loại phiếu được. Hãy tạo đợt chấm mới.')
-    const next: PaperConfig = toSchool
-      ? { ...cfg, sheet: 'school', identity: 'phach', paper: undefined }
-      : { ...cfg, sheet: 'class', identity: 'name', paper: autoPaperSize(cfg) }
+    const L = to === 'school' ? SCHOOL_LIMITS : to === 'grid35' ? GRID35_LIMITS : null
+    if (L && (cfg.n1 > L.n1 || cfg.n2 > L.n2 || cfg.n3 > L.n3))
+      return alert(
+        to === 'school'
+          ? `Phiếu của trường chỉ có ${L.n1} – ${L.n2} – ${L.n3} câu, đợt chấm này có ${cfg.n1} – ${cfg.n2} – ${cfg.n3} câu.`
+          : `Phiếu 35 câu chỉ có ${L.n1} câu trắc nghiệm A–D (không có Phần 2, Phần 3), đợt chấm này có ${cfg.n1} – ${cfg.n2} – ${cfg.n3} câu.`,
+      )
+    const next: PaperConfig =
+      to === 'class' ? { ...cfg, sheet: 'class', identity: 'name', paper: autoPaperSize(cfg) } : { ...cfg, sheet: to, identity: 'phach', paper: undefined }
     const { error } = await supabase.from('paper_batches').update({ config: next }).eq('id', batch.id)
     if (error) return alert(error.message)
     await loadAll()
@@ -289,9 +298,11 @@ export default function TeacherPaperGradingDetail() {
         <b>
           {cfg.sheet === 'school'
             ? 'phiếu tô ô của trường — nhận diện bằng Mã phách + Số phách'
-            : cfg.sheet === 'class'
-              ? `phiếu tô ô do web tạo (${cfg.paper === 'A5' ? '2 phiếu/tờ A4' : '1 phiếu/tờ A4'})`
-              : 'phiếu viết tay (kiểu cũ)'}
+            : cfg.sheet === 'grid35'
+              ? 'phiếu 35 câu (chữ A B C D trong ô) — nhận diện bằng Mã phách + Số phách'
+              : cfg.sheet === 'class'
+                ? `phiếu tô ô do web tạo (${cfg.paper === 'A5' ? '2 phiếu/tờ A4' : '1 phiếu/tờ A4'})`
+                : 'phiếu viết tay (kiểu cũ)'}
         </b>
         {cfg.sheet === 'class' && (
           <button className="btn secondary" style={{ padding: '3px 10px', fontSize: 12, marginLeft: 10 }} onClick={() => openPrintSheets(cfg, batch.title)}>
@@ -299,9 +310,17 @@ export default function TeacherPaperGradingDetail() {
           </button>
         )}
         {isBubbleSheet(cfg) && !sheets.length && (
-          <button className="btn secondary" style={{ padding: '3px 10px', fontSize: 12, marginLeft: 10 }} onClick={switchSheet}>
-            {cfg.sheet === 'school' ? '↔ Đổi sang phiếu lớp (web in)' : '↔ Đổi sang phiếu của trường'}
-          </button>
+          <select
+            value=""
+            onChange={(e) => e.target.value && switchSheet(e.target.value as SheetKind)}
+            title="Chọn nhầm loại phiếu khi tạo đợt? Đổi ở đây (chỉ khi chưa lưu phiếu nào)"
+            style={{ display: 'inline-block', width: 'auto', margin: '0 0 0 10px', padding: '2px 6px', fontSize: 12 }}
+          >
+            <option value="">↔ Đổi loại phiếu…</option>
+            {cfg.sheet !== 'class' && <option value="class">Phiếu tô ô do web tạo</option>}
+            {cfg.sheet !== 'school' && <option value="school">Phiếu của trường (40 – 6 – 8)</option>}
+            {cfg.sheet !== 'grid35' && <option value="grid35">Phiếu 35 câu (chữ trong ô)</option>}
+          </select>
         )}
       </p>
       <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
@@ -317,6 +336,7 @@ export default function TeacherPaperGradingDetail() {
       <div style={{ display: tab === 'grade' ? 'block' : 'none' }}>
         <GradeSection
           batchId={batch.id}
+          batchTitle={batch.title}
           teacherId={teacher.id}
           cfg={cfg}
           keys={keys}
@@ -427,7 +447,13 @@ function KeySection(props: {
           imgs = imgs.concat(got.pages)
         } else imgs = imgs.concat((await filesToImages([f])).map((x) => ({ img: x.dataUrl })))
       }
-      const found = await readKeyTable(imgs, cfg, (i) => setTableMsg(`Đang đọc bảng đáp án (2 lần đối chiếu) — trang ${i}/${imgs.length}…`))
+      const found = await readKeyTable(imgs, cfg, (i) =>
+        setTableMsg(
+          i === 0
+            ? `Đang đọc bảng đáp án ${imgs.length} trang cùng lúc (ghép bảng bị ngắt trang, 2 lần đối chiếu)…`
+            : `Đang đọc bảng đáp án (2 lần đối chiếu) — trang ${i}/${imgs.length}…`,
+        ),
+      )
       setTableMsg(
         `Đọc được ${found.length} mã đề: ${found.map((k) => k.maDe || '(không ghi mã)').join(', ')}. Rà từng mã đề rồi bấm Lưu.`,
       )
@@ -704,6 +730,7 @@ function FlagList({ flags, onClear }: { flags: Record<CellId, string>; onClear: 
 
 function GradeSection(props: {
   batchId: string
+  batchTitle: string
   teacherId: string
   cfg: PaperConfig
   keys: KeyRow[]
@@ -712,7 +739,6 @@ function GradeSection(props: {
   onSaved: () => Promise<void>
   hasClass: boolean
 }) {
-  const { batchId, teacherId, cfg, keys, roster, sheets, onSaved, hasClass } = props
   const [queue, setQueue] = useState<QueueItem[]>([])
   const [camera, setCamera] = useState(false)
   const [doubleCheck, setDoubleCheck] = useState(true)
@@ -720,6 +746,48 @@ function GradeSection(props: {
   const [msg, setMsg] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
   const busy = useRef(false)
+  const { batchId, batchTitle, teacherId, cfg, keys, roster, sheets, onSaved, hasClass } = props
+  const { teacher } = useAuth()
+  const [driveOn, setDriveOn] = useState(driveConnected())
+  // giáo viên đã chọn lưu ảnh vào Drive trong phiên này -> khi token hết hạn, lần bấm Lưu kế tiếp tự xin lại
+  const driveWanted = useRef(driveConnected())
+  useEffect(() => onDriveChange(setDriveOn), [])
+
+  async function connect() {
+    try {
+      await connectDrive(teacher?.email)
+      driveWanted.current = true
+      setMsg('Đã kết nối Google Drive — ảnh các phiếu lưu từ giờ sẽ được cất vào Drive của cô.')
+    } catch (e) {
+      setMsg((e as Error).message)
+    }
+  }
+
+  /** Lấy lại quyền Drive nếu đã hết hạn (gọi ngay đầu sự kiện bấm Lưu). Trả về lỗi (nếu có) */
+  async function ensureDrive(): Promise<string> {
+    if (!driveConfigured || !driveWanted.current || driveConnected()) return ''
+    try {
+      await connectDrive(teacher?.email)
+      return ''
+    } catch (e) {
+      return (e as Error).message
+    }
+  }
+
+  /** Tải ảnh gốc (nén ~1600px) + ảnh máy đọc lên Drive. Lỗi không chặn việc lưu điểm. */
+  async function uploadImages(it: QueueItem, who: string): Promise<{ ids: { image_drive_id?: string; overlay_drive_id?: string }; err: string }> {
+    if (!driveConfigured || !driveConnected()) return { ids: {}, err: driveWanted.current ? 'chưa kết nối được Google Drive' : '' }
+    const stamp = new Date().toLocaleString('sv-SE').replace(/[: ]/g, '-').slice(0, 16)
+    const base = `${who || it.label} – mã ${it.maDe || '?'} – ${stamp}`
+    try {
+      const img = await shrinkJpeg(it.dataUrl, 1600, 0.8)
+      const image_drive_id = await uploadImage(batchTitle, `${base} (ảnh gốc).jpg`, img)
+      const overlay_drive_id = it.read?.overlay ? await uploadImage(batchTitle, `${base} (máy đọc).jpg`, it.read.overlay) : undefined
+      return { ids: { image_drive_id, ...(overlay_drive_id ? { overlay_drive_id } : {}) }, err: '' }
+    } catch (e) {
+      return { ids: {}, err: (e as Error).message }
+    }
+  }
 
   // Giá trị mới nhất cho vòng xử lý nền
   const ctx = useRef({ cfg, keys, roster, doubleCheck })
@@ -851,12 +919,14 @@ function GradeSection(props: {
     return errs
   }
 
-  async function saveItem(it: QueueItem, silent = false): Promise<boolean> {
+  async function saveItem(it: QueueItem, silent = false, driveErr0?: string): Promise<boolean> {
     const errs = readyToSave(it)
     if (errs.length) {
       if (!silent) update(it.uid, { error: errs.join(' ') })
       return false
     }
+    // xin lại quyền Drive (nếu hết hạn) ngay đầu sự kiện bấm — trình duyệt chỉ cho mở cửa sổ Google lúc này
+    const driveErr1 = driveErr0 ?? (await ensureDrive())
     const key = keys.find((k) => k.ma_de === it.maDe)!
     const sc = scorePaper(it.answers!, key.answers, cfg)
     const studentId = it.studentId && it.studentId !== '__other' ? it.studentId : null
@@ -875,6 +945,8 @@ function GradeSection(props: {
       }
       if (!confirm(`${who} đã có phiếu chấm (${existing.score} điểm). Ghi đè bằng phiếu này?`)) return false
     }
+    const up = await uploadImages(it, phach ? `Phách ${it.maPhach.trim()}-${it.soPhach.trim()}` : it.studentName.trim())
+    const driveErr = driveErr1 || up.err
     const row = {
       batch_id: batchId,
       teacher_id: teacherId,
@@ -896,6 +968,7 @@ function GradeSection(props: {
       part_scores: { p1: sc.p1, p2: sc.p2, p3: sc.p3, total: sc.total, max: sc.max },
       edited_cells: it.read ? diffCells(it.read.answers, it.answers!, cfg) : [],
       ai_model: it.read?.model || null,
+      ...up.ids,
       updated_at: new Date().toISOString(),
     }
     const res = existing
@@ -903,7 +976,7 @@ function GradeSection(props: {
       : await supabase.from('paper_sheets').insert(row).select('id').single()
     if (res.error) {
       const dup = res.error.code === '23505'
-      const noCol = /ma_phach|so_phach|stt/.test(res.error.message)
+      const noCol = /ma_phach|so_phach|stt|drive_id/.test(res.error.message)
       update(it.uid, {
         error: dup
           ? phach
@@ -915,7 +988,11 @@ function GradeSection(props: {
       })
       return false
     }
-    update(it.uid, { status: 'saved', savedId: res.data.id, error: undefined })
+    update(it.uid, {
+      status: 'saved',
+      savedId: res.data.id,
+      error: driveErr ? `Đã lưu điểm, nhưng ảnh phiếu CHƯA lưu được vào Google Drive: ${driveErr}` : undefined,
+    })
     return true
   }
 
@@ -923,8 +1000,9 @@ function GradeSection(props: {
     const ready = queue.filter((it) => it.status === 'review' && readyToSave(it).length === 0)
     if (!ready.length)
       return setMsg(`Chưa có phiếu nào đủ điều kiện lưu (đã có ${phach ? 'phách' : 'học sinh'}, mã đề và rà hết ô vàng).`)
+    const driveErr = await ensureDrive()
     let ok = 0
-    for (const it of ready) if (await saveItem(it, true)) ok++
+    for (const it of ready) if (await saveItem(it, true, driveErr)) ok++
     setMsg(`Đã lưu ${ok}/${ready.length} phiếu.`)
     await onSaved()
   }
@@ -954,6 +1032,26 @@ function GradeSection(props: {
             {importing ? 'Đang mở file…' : '🖼 Chọn ảnh / file scan (PDF)'}
           </button>
           <input ref={fileRef} type="file" multiple accept="image/*,application/pdf" style={{ display: 'none' }} onChange={onFiles} />
+          {driveConfigured &&
+            (driveOn ? (
+              <span style={{ fontSize: 13 }}>
+                ☁️ Ảnh phiếu đang lưu vào Google Drive của cô{' '}
+                <a
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault()
+                    driveWanted.current = false
+                    disconnectDrive()
+                  }}
+                >
+                  (ngắt)
+                </a>
+              </span>
+            ) : (
+              <button className="btn secondary" onClick={connect} title="Ảnh phiếu gốc + ảnh máy đọc được cất vào Drive của chính cô; web chỉ thấy các file do nó tạo">
+                ☁️ Kết nối Google Drive để lưu ảnh phiếu
+              </button>
+            ))}
           <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, margin: 0, fontWeight: 500 }}>
             <input type="checkbox" checked={doubleCheck} onChange={(e) => setDoubleCheck(e.target.checked)} style={{ width: 'auto', margin: 0 }} />
             {isBubbleSheet(cfg)
@@ -1600,6 +1698,26 @@ function ResultSection(props: {
                         <>
                           <p style={{ margin: '4px 0', fontSize: 13, color: 'var(--muted)' }}>
                             Phiếu ghi tên: {s.name_read || '—'} · {answersToText(s.answers)}
+                          </p>
+                          <p style={{ margin: '4px 0', fontSize: 13 }}>
+                            {s.image_drive_id || s.overlay_drive_id ? (
+                              <>
+                                Ảnh phiếu (Google Drive):{' '}
+                                {s.image_drive_id && (
+                                  <a href={driveViewUrl(s.image_drive_id)} target="_blank" rel="noreferrer">
+                                    📷 ảnh gốc
+                                  </a>
+                                )}
+                                {s.image_drive_id && s.overlay_drive_id && ' · '}
+                                {s.overlay_drive_id && (
+                                  <a href={driveViewUrl(s.overlay_drive_id)} target="_blank" rel="noreferrer">
+                                    🔍 ảnh máy đọc
+                                  </a>
+                                )}
+                              </>
+                            ) : (
+                              <span style={{ color: 'var(--muted)' }}>Không có ảnh phiếu (phiếu chấm khi chưa kết nối Google Drive).</span>
+                            )}
                           </p>
                           <PaperAnswerGrid
                             cfg={cfg}

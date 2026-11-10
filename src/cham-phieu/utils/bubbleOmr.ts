@@ -40,7 +40,10 @@ export interface BubbleRow {
 }
 
 export interface SheetTemplate {
-  kind: 'school' | 'class'
+  /** 'grid' = phiếu KHÔNG có ô vuông định vị: máy tự tìm lưới ô tròn (VD phiếu 35 câu A–D) */
+  kind: 'school' | 'class' | 'grid'
+  /** Phiếu 'grid': khoảng cách nhóm cột (đơn vị = khoảng cách 2 ô A–B) */
+  gridSpec?: { groups: number[]; groupGap: number; rowStep: number; unit: number }
   /** 4 mốc góc theo thứ tự: trên-trái, trên-phải, dưới-trái, dưới-phải (toạ độ mẫu) */
   corners: [Pt, Pt, Pt, Pt]
   /** Các mốc phụ (để xác nhận đúng phiếu và đúng chiều) */
@@ -77,19 +80,50 @@ export class OmrError extends Error {}
 /**
  * RGBA -> ảnh xám. Lấy min(R,G,B) để mực xanh/tím, bút chì, bút đen đều thành "đậm",
  * nền giấy trắng/ngà vẫn sáng. Thu nhỏ để cạnh dài ≤ maxSide.
+ * Cân bằng trắng trước: ảnh chụp dưới đèn vàng (buổi tối) làm kênh xanh lam tối hẳn -> min(R,G,B) của giấy trắng
+ * cũng tối, ô trống bị coi như "tô mờ". Mỗi kênh được nhân hệ số để màu giấy (phân vị 92%) trở về trung tính.
  */
 export function rgbaToGray(rgba: Uint8ClampedArray | Uint8Array, w: number, h: number, maxSide = 2000): Gray {
   const s = Math.min(1, maxSide / Math.max(w, h))
   const W = Math.max(1, Math.round(w * s))
   const Hh = Math.max(1, Math.round(h * s))
   const out = new Uint8Array(W * Hh)
-  if (s === 1) {
-    for (let i = 0, j = 0; i < out.length; i++, j += 4) {
-      const r = rgba[j],
-        g = rgba[j + 1],
-        b = rgba[j + 2]
-      out[i] = r < g ? (r < b ? r : b) : g < b ? g : b
+  // --- cân bằng trắng theo màu giấy ---
+  const hist = [new Uint32Array(256), new Uint32Array(256), new Uint32Array(256)]
+  const stepPx = Math.max(1, Math.floor((w * h) / 200000))
+  let cnt = 0
+  for (let i = 0; i < w * h; i += stepPx) {
+    const j = i * 4
+    hist[0][rgba[j]]++
+    hist[1][rgba[j + 1]]++
+    hist[2][rgba[j + 2]]++
+    cnt++
+  }
+  const pct = (hh: Uint32Array) => {
+    let acc = 0
+    for (let v = 0; v < 256; v++) {
+      acc += hh[v]
+      if (acc >= cnt * 0.92) return Math.max(1, v)
     }
+    return 255
+  }
+  const P = hist.map(pct)
+  const top = Math.max(...P)
+  const luts = P.map((p) => {
+    const gain = Math.min(2.5, top / p)
+    const lut = new Uint8Array(256)
+    for (let v = 0; v < 256; v++) lut[v] = Math.min(255, Math.round(v * gain))
+    return lut
+  })
+  const [LR, LG, LB] = luts
+  const px = (j: number) => {
+    const r = LR[rgba[j]],
+      g = LG[rgba[j + 1]],
+      b = LB[rgba[j + 2]]
+    return r < g ? (r < b ? r : b) : g < b ? g : b
+  }
+  if (s === 1) {
+    for (let i = 0, j = 0; i < out.length; i++, j += 4) out[i] = px(j)
     return { w: W, h: Hh, d: out }
   }
   // thu nhỏ bằng trung bình ô (box filter)
@@ -104,11 +138,7 @@ export function rgbaToGray(rgba: Uint8ClampedArray | Uint8Array, w: number, h: n
         n = 0
       for (let yy = y0; yy < y1; yy++)
         for (let xx = x0; xx < x1; xx++) {
-          const j = (yy * w + xx) * 4
-          const r = rgba[j],
-            g = rgba[j + 1],
-            b = rgba[j + 2]
-          sum += r < g ? (r < b ? r : b) : g < b ? g : b
+          sum += px((yy * w + xx) * 4)
           n++
         }
       out[y * W + x] = sum / n
@@ -656,6 +686,251 @@ function locateMulti(g: Gray, t: SheetTemplate): { H: number[]; quality: number 
   throw firstErr || new OmrError('Không định vị được phiếu.')
 }
 
+// ---------------- PHIẾU KHÔNG CÓ MỐC ■: TÌM LƯỚI Ô TRÒN ----------------
+
+interface Dot extends Pt {
+  size: number
+  fill: number
+}
+
+/** Các ô tròn (rỗng có chữ A/B/C/D bên trong, hoặc đã tô đặc) cùng cỡ phổ biến nhất trên ảnh */
+function bubbleCandidates(g: Gray): { dots: Dot[]; size: number } {
+  const long = Math.max(g.w, g.h)
+  const win = Math.max(15, Math.round(long / 40)) | 1
+  const bin = adaptiveBinarize(g, win, 12)
+  const all: Dot[] = []
+  for (const b of components(bin, g.w, g.h, Math.round(long * 0.045))) {
+    const bw = b.x1 - b.x0 + 1,
+      bh = b.y1 - b.y0 + 1
+    if (bw < long * 0.006 || bh < long * 0.006) continue
+    if (bw / bh < 0.75 || bw / bh > 1.33) continue
+    const fill = b.area / (bw * bh)
+    if (fill < 0.15) continue
+    all.push({ x: b.cx, y: b.cy, size: (bw + bh) / 2, fill })
+  }
+  // cỡ ô = cỡ phổ biến nhất của các VÒNG RỖNG (chữ in đậm, số thứ tự không phải vòng rỗng)
+  const bins = new Map<number, number>()
+  for (const d of all)
+    if (d.fill < 0.5) {
+      const k = Math.round(d.size / 1.5)
+      bins.set(k, (bins.get(k) || 0) + 1)
+    }
+  let bestK = -1,
+    bestN = 0
+  for (const [k] of bins) {
+    const n = (bins.get(k - 1) || 0) + (bins.get(k) || 0) + (bins.get(k + 1) || 0)
+    if (n > bestN) {
+      bestN = n
+      bestK = k
+    }
+  }
+  if (bestK < 0) return { dots: [], size: 0 }
+  const size = bestK * 1.5
+  return { dots: all.filter((d) => Math.abs(d.size - size) < size * 0.3), size }
+}
+
+/**
+ * Định vị phiếu 'grid':
+ *  1. Tìm các ô tròn cùng cỡ; ước lượng 2 véc-tơ lưới (ô kế bên h, hàng kế dưới v) từ láng giềng gần nhất.
+ *  2. Đổi toạ độ ảnh -> toạ độ lưới; thử mọi ô làm "ô gốc" + khoảng cách nhóm cột, chọn cách khớp nhiều ô nhất.
+ *  3. Tính H (bình phương tối thiểu) từ các cặp khớp, chiếu lại, ghép lại theo khoảng cách điểm ảnh, lặp 3 lần.
+ */
+function locateGrid(g: Gray, t: SheetTemplate): { H: number[]; quality: number } {
+  const spec = t.gridSpec!
+  const { dots, size } = bubbleCandidates(g)
+  if (dots.length < 12) throw new OmrError('Không tìm thấy lưới ô tròn trên ảnh. Hãy chụp thẳng, rõ, lọt trọn phần trắc nghiệm.')
+  // 1. véc-tơ lưới
+  const hs: Pt[] = [],
+    vs: Pt[] = []
+  for (let i = 0; i < dots.length; i++) {
+    const near = dots
+      .map((d, j) => ({ j, dd: Math.hypot(d.x - dots[i].x, d.y - dots[i].y) }))
+      .filter((o) => o.j !== i && o.dd < size * 3.2)
+      .sort((a, b) => a.dd - b.dd)
+      .slice(0, 4)
+    for (const o of near) {
+      let vx = dots[o.j].x - dots[i].x,
+        vy = dots[o.j].y - dots[i].y
+      if (Math.abs(vx) > Math.abs(vy)) {
+        if (vx < 0) {
+          vx = -vx
+          vy = -vy
+        }
+        hs.push({ x: vx, y: vy })
+      } else {
+        if (vy < 0) {
+          vx = -vx
+          vy = -vy
+        }
+        vs.push({ x: vx, y: vy })
+      }
+    }
+  }
+  if (hs.length < 6 || vs.length < 6) throw new OmrError('Không nhận ra lưới ô tròn (quá ít ô). Hãy chụp gần hơn, rõ hơn.')
+  const medv = (a: number[]) => {
+    const s2 = [...a].sort((x, y) => x - y)
+    return s2[Math.floor(s2.length / 2)]
+  }
+  // chỉ lấy các véc-tơ ngắn nhất (ô kề nhau), bỏ bước nhảy qua khoảng trống
+  const hLen = medv(hs.map((p) => Math.hypot(p.x, p.y)))
+  const vLen = medv(vs.map((p) => Math.hypot(p.x, p.y)))
+  const hk = hs.filter((p) => Math.hypot(p.x, p.y) < hLen * 1.3)
+  const vk = vs.filter((p) => Math.hypot(p.x, p.y) < vLen * 1.3)
+  const h = { x: medv(hk.map((p) => p.x)), y: medv(hk.map((p) => p.y)) }
+  const v = { x: medv(vk.map((p) => p.x)), y: medv(vk.map((p) => p.y)) }
+  const det = h.x * v.y - h.y * v.x
+  if (Math.abs(det) < 1e-6) throw new OmrError('Không nhận ra lưới ô tròn.')
+  const toUV = (p: Pt) => ({ x: (v.y * p.x - v.x * p.y) / det, y: (-h.y * p.x + h.x * p.y) / det })
+  const uv = dots.map(toUV)
+  // bảng băm dạng mảng theo ô 0,5 đơn vị lưới (nhanh hơn Map chuỗi ~20 lần)
+  let mnx = Infinity,
+    mny = Infinity,
+    mxx = -Infinity,
+    mxy = -Infinity
+  for (const p of uv) {
+    mnx = Math.min(mnx, p.x)
+    mny = Math.min(mny, p.y)
+    mxx = Math.max(mxx, p.x)
+    mxy = Math.max(mxy, p.y)
+  }
+  const CW = Math.floor((mxx - mnx) * 2) + 1,
+    CH = Math.floor((mxy - mny) * 2) + 1
+  if (CW * CH > 4e6) throw new OmrError('Không nhận ra lưới ô tròn.')
+  const cellOf = (x: number, y: number) => Math.floor((x - mnx) * 2) + Math.floor((y - mny) * 2) * CW
+  const cnt = new Int32Array(CW * CH + 1)
+  uv.forEach((p) => cnt[cellOf(p.x, p.y) + 1]++)
+  for (let i = 1; i <= CW * CH; i++) cnt[i] += cnt[i - 1]
+  const fillPos = cnt.slice(0, CW * CH)
+  const items = new Int32Array(uv.length)
+  uv.forEach((p, i) => (items[fillPos[cellOf(p.x, p.y)]++] = i))
+  const nearest = (x: number, y: number, tol: number) => {
+    let bi = -1,
+      bd = tol
+    const cx = Math.floor((x - mnx) * 2),
+      cy = Math.floor((y - mny) * 2)
+    for (let dy = -1; dy <= 1; dy++) {
+      const yy = cy + dy
+      if (yy < 0 || yy >= CH) continue
+      for (let dx = -1; dx <= 1; dx++) {
+        const xx = cx + dx
+        if (xx < 0 || xx >= CW) continue
+        const c = xx + yy * CW
+        for (let k = cnt[c]; k < cnt[c + 1]; k++) {
+          const i = items[k]
+          const d = Math.hypot(uv[i].x - x, uv[i].y - y)
+          if (d < bd) {
+            bd = d
+            bi = i
+          }
+        }
+      }
+    }
+    return bi
+  }
+  // toạ độ lưới của từng ô mẫu theo khoảng cách nhóm G: (cột trong nhóm + nhóm·G, hàng)
+  const unit = spec.unit
+  const all = t.rows.flatMap((r) => r.opts)
+  const G0 = spec.groupGap
+  const parts = all.map((o) => {
+    const xu = o.x / unit
+    const gi = Math.floor(xu / G0 + 1e-6)
+    return { gi, oi: xu - gi * G0, row: o.y / (unit * spec.rowStep) }
+  })
+  const lat = (G: number) => parts.map((p) => ({ x: p.gi * G + p.oi, y: p.row }))
+  const anchorsTmpl = [0, 1, 2, 3, 4, 5, 6, 7].filter((k) => k < all.length)
+  let best: { m: number; G: number; ai: number; k: number } | null = null
+  const tryG = (G: number) => {
+    const L = lat(G)
+    for (let ai = 0; ai < uv.length; ai++)
+      for (const k of anchorsTmpl) {
+        const ox = uv[ai].x - L[k].x,
+          oy = uv[ai].y - L[k].y
+        let m = 0,
+          left = L.length
+        const need = best ? best.m : 0
+        for (const p of L) {
+          if (nearest(p.x + ox, p.y + oy, 0.3) >= 0) m++
+          left--
+          if (m + left <= need) break // không thể vượt cách khớp tốt nhất -> bỏ sớm
+        }
+        if (!best || m > best.m) best = { m, G, ai, k }
+      }
+  }
+  for (let G = spec.groupGap - 0.5; G <= spec.groupGap + 0.5 + 1e-9; G += 0.05) tryG(G)
+  const g0 = best!.G
+  for (let G = g0 - 0.04; G <= g0 + 0.04 + 1e-9; G += 0.01) tryG(G)
+  const b = best!
+  if (b.m < all.length * 0.4) throw new OmrError('Ảnh không khớp mẫu phiếu đã chọn (không thấy đủ lưới ô tròn). Kiểm tra lại loại phiếu hoặc chụp lại.')
+  // 2. cặp khớp ban đầu
+  const L = lat(b.G)
+  const ox = uv[b.ai].x - L[b.k].x,
+    oy = uv[b.ai].y - L[b.k].y
+  let src: Pt[] = [],
+    dst: Pt[] = []
+  L.forEach((p, i) => {
+    const j = nearest(p.x + ox, p.y + oy, 0.3)
+    if (j >= 0) {
+      src.push(all[i])
+      dst.push(dots[j])
+    }
+  })
+  // 3. tinh chỉnh bằng phép chiếu phối cảnh
+  let H = homographyLS(src, dst)
+  if (!H) throw new OmrError('Không định vị được lưới ô tròn.')
+  const step = Math.hypot(h.x, h.y)
+  for (let it = 0; it < 3; it++) {
+    src = []
+    dst = []
+    const used = new Set<number>()
+    for (const o of all) {
+      const q = applyH(H, o)
+      let bi = -1,
+        bd = step * 0.35
+      dots.forEach((d, j) => {
+        const dd = Math.hypot(d.x - q.x, d.y - q.y)
+        if (dd < bd && !used.has(j)) {
+          bd = dd
+          bi = j
+        }
+      })
+      if (bi >= 0) {
+        used.add(bi)
+        src.push(o)
+        dst.push(dots[bi])
+      }
+    }
+    const H2 = homographyLS(src, dst)
+    if (!H2) break
+    H = H2
+  }
+  return { H, quality: src.length / all.length }
+}
+
+function locateGridMulti(g: Gray, t: SheetTemplate): { H: number[]; quality: number } {
+  let best: { H: number[]; quality: number } | null = null
+  let firstErr: Error | null = null
+  const long = Math.max(g.w, g.h)
+  const tries: number[] = [1, ...[1600, 1100].filter((s2) => s2 < long * 0.85).map((s2) => s2 / long)]
+  for (const f of tries) {
+    try {
+      const r = locateGrid(f === 1 ? g : downscale(g, f), t)
+      const H = f === 1 ? r.H : r.H.map((v, i) => (i < 6 ? v / f : v))
+      if (!best || r.quality > best.quality) best = { H, quality: r.quality }
+      if (r.quality >= 0.85) break
+    } catch (e) {
+      if (!firstErr) firstErr = e as Error
+    }
+  }
+  // phiếu đúng loại: gần như mọi ô của lưới đều khớp (ảnh thật ≥ 0,97). Phiếu khác loại có lưới ô gần giống
+  // (VD phiếu trường 40 câu) chỉ khớp được ~0,8 -> từ chối, không đọc bừa.
+  if (best && best.quality >= 0.93) return best
+  if (best)
+    throw new OmrError(
+      'Ảnh không khớp mẫu phiếu 35 câu (lưới ô tròn không đúng 4 cột 10 – 10 – 10 – 5 câu, hoặc bị che / mờ một phần). Kiểm tra lại loại phiếu, hoặc chụp lại thẳng, rõ, lọt trọn phần trắc nghiệm.',
+    )
+  throw firstErr || new OmrError('Không định vị được phiếu.')
+}
+
 /** Đọc dãy bit: ô vuông nhỏ đặc = 1, rỗng = 0 (so độ sáng lòng ô với nền quanh) */
 function readCode(g: Gray, H: number[], bits: Pt[], size: number): number {
   let v = 0
@@ -895,6 +1170,33 @@ function fillScore(p: Patch, c: Pt, R: number): number {
   return n ? sum / n : 0
 }
 
+/**
+ * Độ phủ lòng ô cho phiếu có CHỮ IN TRONG Ô (Ⓐ Ⓑ Ⓒ Ⓓ, không có ô vuông đen).
+ * Ô trống: nét chữ in sẫm nhưng phần sáng nhất của lòng ô vẫn là màu giấy.
+ * Ô tô (kể cả bút chì nhạt, bị loá): phần sáng nhất của lòng ô cũng đã sẫm hơn giấy.
+ * -> dùng mức sáng ở phân vị 85% trong hình tròn 0,72R (bỏ qua nét chữ in); nền giấy đo sát ngoài viền (1,4R). Có thể âm (lòng ô sáng hơn nền quanh ô).
+ */
+function coverScore(p: Patch, c: Pt, R: number): number {
+  const ring: number[] = []
+  for (let k = 0; k < 24; k++) {
+    const a = (k / 24) * Math.PI * 2
+    ring.push(pv(p, c.x + Math.cos(a) * R * 1.4, c.y + Math.sin(a) * R * 1.4))
+  }
+  ring.sort((a, b) => a - b)
+  const paper = Math.max(60, ring[Math.floor(ring.length * 0.85)])
+  const vals: number[] = []
+  const rr = R * 0.72
+  const st = rr / 6
+  for (let dy = -rr; dy <= rr + 1e-9; dy += st)
+    for (let dx = -rr; dx <= rr + 1e-9; dx += st) {
+      if (dx * dx + dy * dy > rr * rr) continue
+      vals.push(pv(p, c.x + dx, c.y + dy))
+    }
+  if (!vals.length) return 0
+  vals.sort((a, b) => a - b)
+  return 1 - vals[Math.floor(vals.length * 0.85)] / paper
+}
+
 // ---------------- ĐỌC CẢ PHIẾU ----------------
 
 export interface ReadBubblesOptions {
@@ -903,7 +1205,7 @@ export interface ReadBubblesOptions {
 }
 
 export function readBubbles(g: Gray, t: SheetTemplate, opt: ReadBubblesOptions): BubbleRead {
-  const { H, quality } = locateMulti(g, t)
+  const { H, quality } = t.kind === 'grid' ? locateGridMulti(g, t) : locateMulti(g, t)
   if (t.code) {
     const v = readCode(g, H, t.code.bits, t.code.size)
     if (v === 0)
@@ -921,7 +1223,7 @@ export function readBubbles(g: Gray, t: SheetTemplate, opt: ReadBubblesOptions):
   const q0 = applyH(H, TL),
     q1 = applyH(H, TR)
   const pxPerUnit = Math.hypot(q1.x - q0.x, q1.y - q0.y) / Math.hypot(TR.x - TL.x, TR.y - TL.y)
-  const scale = Math.min(12 / Math.min(R0, ...t.rows.map((r) => r.r ?? R0)), pxPerUnit * 1.5)
+  const scale = t.kind === 'grid' ? pxPerUnit : Math.min(12 / Math.min(R0, ...t.rows.map((r) => r.r ?? R0)), pxPerUnit * 1.5)
 
   const used = t.rows.filter((r) => (r.part === 1 ? r.q <= opt.n1 : r.q <= opt.n2))
   const blocks = new Map<string, BubbleRow[]>()
@@ -942,22 +1244,67 @@ export function readBubbles(g: Gray, t: SheetTemplate, opt: ReadBubblesOptions):
     const pos = refineBlock(patch, rows, R, sp)
     for (const row of mine) {
       const centers = row.opts.map((_, i) => pos(row, i))
-      const scores = centers.map((c) => fillScore(patch, c, R))
+      const scores = centers.map((c) => (t.kind === 'grid' ? coverScore(patch, c, R) : fillScore(patch, c, R)))
       const rings = centers.map((c) => ringOnPatch(patch, c.x, c.y, R))
       detail.push({ row, centers, scores, rings, chosen: null, flagged: false })
     }
+  }
+
+  if (t.kind === 'grid') return decideGrid(detail, opt, H, quality)
+
+  // Bù mức mực in sẵn trong từng loại ô: ô có chữ in bên trong (Ⓐ Ⓑ Ⓒ Ⓓ) — chữ B nhiều nét hơn A, C, D nên ô B trống
+  // vẫn hơi sẫm. Mức nền của từng phương án = phân vị 25% điểm của phương án đó qua các câu Phần I (đa số là ô trống).
+  const p1d = detail.filter((d) => d.row.part === 1)
+  if (p1d.length >= 8) {
+    const nOpt = Math.max(...p1d.map((d) => d.scores.length))
+    const optBase: number[] = []
+    for (let i = 0; i < nOpt; i++) {
+      const v = p1d
+        .map((d) => d.scores[i])
+        .filter((x) => x !== undefined)
+        .sort((a, b) => a - b)
+      optBase.push(v[Math.floor(v.length * 0.25)])
+    }
+    const common = Math.min(...optBase)
+    for (const d of p1d) d.scores = d.scores.map((v, i) => Math.max(0, v - (optBase[i] - common)))
   }
 
   // Ngưỡng thích nghi theo cả phiếu: mức mực = trung vị các ô tô rõ
   const all = detail.flatMap((d) => d.scores)
   const marked = all.filter((v) => v >= 0.3).sort((a, b) => a - b)
   const inkLevel = marked.length ? marked[Math.floor(marked.length / 2)] : 0.6
-  const hi = Math.max(0.24, Math.min(0.42, inkLevel * 0.5))
-  const lo = 0.13
+  const hiGlobal = Math.max(0.24, Math.min(0.42, inkLevel * 0.5))
+
+  // Mức "ô trống" theo VÙNG: ảnh chụp dưới đèn, bóng tay, góc tối, nhoè làm ô trống ở vùng đó hơi sẫm.
+  // Lấy các ô không phải ô đậm nhất của mỗi hàng (gần như chắc là ô trống) ở ~12 hàng gần nhất -> trung vị + độ phân tán.
+  const rowPos = detail.map((d) => {
+    const n = d.row.opts.length
+    return { x: d.row.opts.reduce((t, o) => t + o.x, 0) / n, y: d.row.opts.reduce((t, o) => t + o.y, 0) / n }
+  })
+  const rowEmpties = detail.map((d) => {
+    const mx = Math.max(...d.scores)
+    let skipped = false
+    return d.scores.filter((v) => (!skipped && v === mx ? ((skipped = true), false) : true))
+  })
+  const med = (a: number[]) => {
+    const t = [...a].sort((x, y) => x - y)
+    return t.length ? t[Math.floor(t.length / 2)] : 0
+  }
+  const baseOf = detail.map((_, k) => {
+    const near = detail
+      .map((__, j) => ({ j, dist: Math.hypot(rowPos[j].x - rowPos[k].x, rowPos[j].y - rowPos[k].y) }))
+      .sort((p, q) => p.dist - q.dist)
+      .slice(0, 12)
+    const vals = near.flatMap((n) => rowEmpties[n.j])
+    const b = med(vals)
+    const spread = Math.max(0.015, med(vals.map((v) => Math.abs(v - b))) * 1.4826)
+    return { b, spread }
+  })
+  const lo0 = 0.13
 
   // Độ rõ viền ô trống ở vị trí đã dò (căn đúng: viền rõ; lệch hàng/cột: gần như mất viền)
   const emptyRings = detail
-    .flatMap((d) => d.scores.map((v, i) => (v < lo ? d.rings[i] : NaN)))
+    .flatMap((d, k) => d.scores.map((v, i) => (v < Math.max(lo0, baseOf[k].b + 0.07) ? d.rings[i] : NaN)))
     .filter((v) => Number.isFinite(v))
     .sort((a, b) => a - b)
   const ringRef = emptyRings.length ? emptyRings[Math.floor(emptyRings.length / 2)] : 0
@@ -966,28 +1313,42 @@ export function readBubbles(g: Gray, t: SheetTemplate, opt: ReadBubblesOptions):
   const p2: (boolean | null)[][] = Array.from({ length: opt.n2 }, () => [null, null, null, null])
   const flags: Record<string, string> = {}
   const LET = ['A', 'B', 'C', 'D']
-  for (const d of detail) {
+  detail.forEach((d, k) => {
     const { row, scores } = d
     const name = (i: number) => (row.part === 1 ? LET[i] : i === 0 ? 'Đúng' : 'Sai')
     const order = scores.map((v, i) => ({ v, i })).sort((a, b) => b.v - a.v)
-    const on = order.filter((o) => o.v >= hi)
-    const mid = order.filter((o) => o.v >= lo && o.v < hi)
+    const top = order[0],
+      second = order[1]
+    const rowMin = order[order.length - 1].v
+    // mức ô trống: lấy thấp hơn giữa mức vùng và ô nhạt nhất của chính hàng (vùng có thể lẫn chỗ tối/sáng khác nhau)
+    const base = Math.min(baseOf[k].b, rowMin)
+    const spread = Math.min(0.05, baseOf[k].spread)
+    // Quyết định dựa trên ĐỘ CHÊNH: ô được chọn phải sẫm hẳn so với mức ô trống của vùng (base)
+    // và sẫm hẳn so với ô đứng thứ hai trong hàng. Ngưỡng tự giãn khi ảnh nhiễu (spread lớn).
+    const rise = top.v - base
+    const strong = rise >= Math.max(0.15, 4 * spread) && top.v >= hiGlobal * 0.75
+    const gap = top.v - second.v
+    const secondRise = second.v - base
     let chosen: number | null = null
     let why = ''
-    if (on.length === 1) {
-      chosen = on[0].i
-      if (mid.length && on[0].v < mid[0].v * 2.2)
-        why = `Ô ${name(on[0].i)} tô đậm nhưng ô ${name(mid[0].i)} có vết mờ (tẩy chưa sạch?)`
-    } else if (on.length >= 2) {
-      // tô 2 ô: nếu một ô đậm vượt trội (ô kia là vết tẩy đậm) vẫn đánh dấu để giáo viên quyết
-      chosen = null
-      why = `Tô ${on.length} ô (${on.map((o) => name(o.i)).join(', ')})`
-    } else if (mid.length) {
-      why = `Ô ${name(mid[0].i)} tô mờ / có vết tẩy — chưa chắc học sinh chọn`
+    if (strong && gap >= Math.max(0.12, 0.35 * rise)) {
+      chosen = top.i
+      if (secondRise >= Math.max(0.1, 4 * spread) && second.v > top.v * 0.45)
+        why = `Ô ${name(top.i)} tô đậm nhưng ô ${name(second.i)} có vết mờ (tẩy chưa sạch?)`
+    } else if (strong) {
+      const many = order.filter((o) => o.v - base >= Math.max(0.15, 4 * spread) && top.v - o.v < Math.max(0.12, 0.35 * rise))
+      why =
+        many.length >= 2
+          ? `Tô ${many.length} ô (${many.map((o) => name(o.i)).join(', ')})`
+          : `Ô ${name(top.i)} và ô ${name(second.i)} đậm gần như nhau — kiểm tra lại`
+    } else if (rise >= Math.max(0.06, 2.5 * spread)) {
+      why = `Ô ${name(top.i)} tô mờ / có vết tẩy — chưa chắc học sinh chọn`
+    } else if (rowMin - baseOf[k].b >= 0.15 && rowMin >= hiGlobal * 0.75) {
+      why = 'Tất cả các ô của hàng đều sẫm (tô hết?) — kiểm tra lại'
     }
     // Vị trí ô không khớp chắc (giấy cong / nhoè / che khuất) -> không đoán, để giáo viên xem
     if (!why && ringRef > 20) {
-      const er = scores.map((v, i) => (v < lo ? d.rings[i] : NaN)).filter((v) => Number.isFinite(v)).sort((a, b) => a - b)
+      const er = scores.map((v, i) => (v < Math.max(lo0, base + 0.07) ? d.rings[i] : NaN)).filter((v) => Number.isFinite(v)).sort((a, b) => a - b)
       const weak = er.length > 0 && er[Math.floor((er.length - 1) / 2)] < ringRef * 0.3
       if (weak) why = chosen === null ? 'Không thấy rõ các ô của hàng này (ảnh mờ / giấy cong / bị che) — kiểm tra lại' : 'Vị trí ô hàng này chưa khớp chắc — kiểm tra lại'
     }
@@ -999,7 +1360,79 @@ export function readBubbles(g: Gray, t: SheetTemplate, opt: ReadBubblesOptions):
     }
     if (row.part === 1) p1[row.q - 1] = chosen === null ? null : LET[chosen]
     else p2[row.q - 1][row.sub ?? 0] = chosen === null ? null : chosen === 0
+  })
+  return { p1, p2, flags, detail, H, quality, inkLevel }
+}
+
+/**
+ * Quyết định cho phiếu chữ-trong-ô (chỉ Phần I). Điểm coverScore của ô trống phụ thuộc chữ in (B nhiều nét hơn)
+ * và độ nét/ánh sáng từng vùng -> mức nền tính RIÊNG cho từng phương án, theo 8 câu gần nhất
+ * (lấy trung vị 4 giá trị thấp nhất: đúng kể cả khi 4/8 câu gần đó cùng tô phương án này),
+ * chặn trên bởi trung vị toàn phiếu + 0,05 (đề phòng cả cột tô cùng một phương án).
+ */
+function decideGrid(detail: BubbleRead['detail'], opt: ReadBubblesOptions, H: number[], quality: number): BubbleRead {
+  const LET = ['A', 'B', 'C', 'D']
+  const p1: (string | null)[] = Array.from({ length: opt.n1 }, () => null)
+  const p2: (boolean | null)[][] = []
+  const flags: Record<string, string> = {}
+  const pos = detail.map((d) => {
+    const n = d.row.opts.length
+    return { x: d.row.opts.reduce((t, o) => t + o.x, 0) / n, y: d.row.opts.reduce((t, o) => t + o.y, 0) / n }
+  })
+  const med = (a: number[]) => {
+    const t = [...a].sort((x, y) => x - y)
+    return t.length ? (t.length % 2 ? t[(t.length - 1) / 2] : (t[t.length / 2 - 1] + t[t.length / 2]) / 2) : 0
   }
+  const nOpt = Math.max(...detail.map((d) => d.scores.length))
+  const globalBase = Array.from({ length: nOpt }, (_, i) => med(detail.map((d) => d.scores[i]).filter((v) => v !== undefined)))
+  const K = Math.min(8, detail.length - 1)
+  const raw = detail.map((d) => [...d.scores])
+  detail.forEach((d, k) => {
+    const near = detail
+      .map((_, j) => ({ j, dist: j === k ? Infinity : Math.hypot(pos[j].x - pos[k].x, pos[j].y - pos[k].y) }))
+      .sort((a, b) => a.dist - b.dist)
+      .slice(0, K)
+    d.scores = raw[k].map((v, i) => {
+      const vals = near.map((n) => raw[n.j][i]).filter((x) => x !== undefined).sort((a, b) => a - b)
+      const local = vals.length >= 3 ? med(vals.slice(0, Math.max(2, Math.ceil(vals.length / 2)))) : globalBase[i]
+      return v - Math.min(local, globalBase[i] + 0.05)
+    })
+  })
+  // ngưỡng (đo trên ảnh chụp thật): ô tô (kể cả bút chì loá) >= 0,115; ô trống <= 0,085 kể cả ảnh nhoè/bóng đổ;
+  // vùng giữa (0,06–0,095) luôn tô vàng để giáo viên xem
+  const CHOOSE = 0.095,
+    GAP = 0.05,
+    FAINT = 0.06,
+    SURE = 0.16
+  detail.forEach((d) => {
+    const order = d.scores.map((v, i) => ({ v, i })).sort((a, b) => b.v - a.v)
+    const top = order[0],
+      second = order[1]
+    let chosen: number | null = null
+    let why = ''
+    if (top.v >= CHOOSE && top.v - second.v >= Math.max(GAP, 0.4 * top.v)) {
+      chosen = top.i
+      if (second.v >= FAINT + 0.02) why = `Ô ${LET[top.i]} tô đậm nhưng ô ${LET[second.i]} có vết mờ (tẩy chưa sạch?)`
+      // tô nhạt (bút chì nhạt, bị loá) gần mức chữ in nhoè của ô trống -> vẫn điền sẵn nhưng tô vàng
+      else if (top.v < SURE) why = `Ô ${LET[top.i]} tô nhạt — kiểm tra lại`
+    } else if (top.v >= CHOOSE) {
+      const many = order.filter((o) => o.v >= CHOOSE && top.v - o.v < Math.max(GAP, 0.4 * top.v))
+      why = many.length >= 2 ? `Tô ${many.length} ô (${many.map((o) => LET[o.i]).join(', ')})` : `Ô ${LET[top.i]} và ô ${LET[second.i]} đậm gần như nhau — kiểm tra lại`
+    } else if (top.v >= FAINT) {
+      why = `Ô ${LET[top.i]} tô mờ / có vết tẩy — chưa chắc học sinh chọn`
+    } else {
+      // phiếu chữ-trong-ô: ô tô nhạt/loá có thể lẫn với ô trống khi ảnh nhoè -> câu bỏ trống luôn để giáo viên xem
+      why = 'Không thấy ô nào được tô — kiểm tra lại'
+    }
+    d.chosen = chosen
+    if (why) {
+      d.flagged = true
+      flags[`1.${d.row.q}`] = why
+    }
+    if (d.row.q <= opt.n1) p1[d.row.q - 1] = chosen === null ? null : LET[chosen]
+  })
+  const marked = detail.filter((d) => d.chosen !== null).map((d) => d.scores[d.chosen!]).sort((a, b) => a - b)
+  const inkLevel = marked.length ? marked[Math.floor(marked.length / 2)] : 0
   return { p1, p2, flags, detail, H, quality, inkLevel }
 }
 

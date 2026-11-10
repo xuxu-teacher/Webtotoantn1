@@ -8,8 +8,9 @@
  *   GEMINI_API_KEY, GEMINI_MODELS (tuỳ chọn), ANTHROPIC_API_KEY (tuỳ chọn), CLAUDE_MODEL (tuỳ chọn)
  *   OMR_MODELS (tuỳ chọn) – danh sách model riêng cho chấm phiếu, ưu tiên hơn GEMINI_MODELS
  *
- * Body: { image: base64, mode: 'key'|'sheet'|'fields'|'keytable', kind?: 'school'|'class', n1, n2, n3, modelOffset?: number,
- *         text?: string (lớp chữ của trang PDF bảng đáp án, nếu có) }
+ * Body: { image: base64, mode: 'key'|'sheet'|'fields'|'keytable', kind?: 'school'|'class'|'grid35', n1, n2, n3, modelOffset?: number,
+ *         text?: string (lớp chữ của trang PDF bảng đáp án, nếu có),
+ *         images?: string[], texts?: string[] (bảng đáp án NHIỀU TRANG gửi cùng lúc — thay cho image/text) }
  *   modelOffset = 1: bắt đầu từ model thứ hai trong danh sách (dùng cho lần đọc đối chiếu)
  * Trả về: { data, provider, model }
  */
@@ -76,7 +77,24 @@ CHỈ TRẢ VỀ JSON đúng dạng sau (mảng p1 có đúng ${n1} phần tử,
 }
 
 /** Phiếu tô ô: chỉ còn các ô VIẾT TAY (thông tin đầu phiếu + Phần III) cần AI đọc */
-function fieldsPrompt(kind: 'school' | 'class', n3: number): string {
+function fieldsPrompt(kind: 'school' | 'class' | 'grid35', n3: number): string {
+  if (kind === 'grid35')
+    return `Bạn là máy đọc chữ viết tay trên phiếu trả lời trắc nghiệm (THPT Việt Nam).
+Ảnh là PHẦN ĐẦU phiếu "PHIẾU TRẢ LỜI" đã cắt và nắn thẳng, gồm một bảng 3 ô: "Mã đề thi:", "Mã phách:", "Điểm:".
+Nhiệm vụ DUY NHẤT: chép lại CHÍNH XÁC chữ/số viết tay. KHÔNG đoán, KHÔNG tự sửa.
+
+- Ô "Mã đề thi:" -> ma_de (thường 3 chữ số, VD "502"; có thể viết trên dòng chấm).
+- Ô "Mã phách:" thường có HAI số viết tay: số LỚN (VD "115") -> ma_phach; số NHỎ hơn, thường viết bằng MỰC ĐỎ ở góc dưới bên phải ô (VD "02") -> so_phach.
+  Chỉ có một số -> ghi vào ma_phach, so_phach = "".
+- KHÔNG đọc ô "Điểm" và các dòng chữ in sẵn (hướng dẫn, "PART A"...).
+
+QUY TẮC
+1. Chú ý phân biệt 1 và 7, 4 và 9, 0 và 6, 5 và S, 2 và Z.
+2. Có gạch xoá rồi viết lại: lấy phần viết sau cùng (không bị gạch).
+3. Ô không chắc ≥ 95% phải có trong "uncertain" theo mã: "MA_DE", "MA_PHACH", "SO_PHACH".
+
+CHỈ TRẢ VỀ JSON:
+{"ma_de":"","ma_phach":"","so_phach":"","ho_ten":"","stt":"","lop":"","p3":[],"uncertain":[],"ghi_chu":""}`
   const header =
     kind === 'school'
       ? `- PHẦN TRÊN: đầu phiếu của trường gồm các ô "MÃ ĐỀ", "Mã phách", "Điểm TN", "Điểm TL", "Tổng điểm", "Số phách", "Số tờ".
@@ -109,13 +127,27 @@ CHỈ TRẢ VỀ JSON (p3 có đúng ${n3} phần tử):
 }
 
 /** Ảnh/trang PDF có BẢNG ĐÁP ÁN của đề (một hoặc nhiều mã đề) */
-function keyTablePrompt(n1: number, n2: number, n3: number, hasText: boolean): string {
-  return `Bạn đọc BẢNG ĐÁP ÁN của đề kiểm tra môn Toán THPT (Việt Nam). KHÔNG giải toán, CHỈ chép đáp án có sẵn. Sai một ô là cả lớp bị chấm sai, nên phải cực kì cẩn thận.
-Đề có 3 phần: Phần I ${n1} câu trắc nghiệm 4 phương án (A/B/C/D); Phần II ${n2} câu Đúng/Sai, mỗi câu 4 ý a), b), c), d); Phần III ${n3} câu trả lời ngắn (đáp số).
+function keyTablePrompt(n1: number, n2: number, n3: number, hasText: boolean, nPages = 1): string {
+  const parts = [
+    `Phần I ${n1} câu trắc nghiệm 4 phương án (A/B/C/D)`,
+    n2 ? `Phần II ${n2} câu Đúng/Sai, mỗi câu 4 ý a), b), c), d)` : 'KHÔNG có Phần II (p2 = [])',
+    n3 ? `Phần III ${n3} câu trả lời ngắn (đáp số)` : 'KHÔNG có Phần III (p3 = [])',
+  ]
+  return `Bạn đọc BẢNG ĐÁP ÁN của đề kiểm tra THPT (Việt Nam; có thể là môn Toán, Lịch sử, Tiếng Anh…). KHÔNG giải đề, CHỈ chép đáp án có sẵn. Sai một ô là cả lớp bị chấm sai, nên phải cực kì cẩn thận.
+Cần lấy: ${parts.join('; ')}. Bảng có thể ghi phần trắc nghiệm là "Phần I", "PHẦN 1", "Part A", "Trắc nghiệm"… Bỏ qua phần tự luận.
 ${
   hasText
     ? `Kèm theo ảnh là LỚP CHỮ trích từ chính trang PDF đó (dấu " | " ngăn cách các ô bảng nằm cùng hàng). Lớp chữ chính xác tuyệt đối về kí tự: chép kí tự theo lớp chữ, dùng ảnh để hiểu bố cục bảng (ô nào thuộc câu nào, ý nào, mã đề nào).`
     : 'Chỉ có ảnh (trang scan / ảnh chụp).'
+}${
+  nPages > 1
+    ? `
+CÓ ${nPages} TRANG (ảnh "TRANG 1", "TRANG 2", … theo thứ tự). Đây là CÙNG MỘT bộ đáp án trải trên nhiều trang:
+- Bảng có thể bị ngắt giữa chừng: trang sau tiếp nối các câu của trang trước (VD trang 1 Phần I câu 1–10, trang 2 câu 11–16 rồi Phần II).
+- Hàng/cột tiêu đề "Mã đề" có thể CHỈ có ở trang đầu: ở trang sau, các cột (hoặc hàng) vẫn theo ĐÚNG THỨ TỰ mã đề như trang đầu
+  (trừ khi trang sau có tiêu đề mã đề riêng thì theo tiêu đề đó).
+- Ghép tất cả thành MỘT danh sách "keys", mỗi mã đề đúng một phần tử chứa đủ đáp án từ mọi trang. Không tạo phần tử trùng mã đề.`
+    : ''
 }
 
 CÁCH XÁC ĐỊNH ĐÚNG Ô
@@ -136,24 +168,32 @@ KIỂM TRA CHÉO (bắt buộc)
 CHỈ TRẢ VỀ JSON: {"keys":[{"ma_de":"101","p1":["A",...${n1} phần tử],"p2":[["Đ","S","Đ","S"],...${n2} mảng],"p3":["-1,5",...${n3} phần tử],"p1_raw":"1A 2B ...","p2_raw":["a) Đ b) S c) Đ d) S",...]}],"uncertain":[],"ghi_chu":""}`
 }
 
-async function geminiRequest(model: string, apiKey: string, system: string, image: string, highRes: boolean, extraText = '') {
+/** Nội dung gửi AI: 1 ảnh (phiếu) hoặc nhiều trang (bảng đáp án), mỗi trang kèm lớp chữ PDF nếu có */
+function pageLabel(i: number, n: number, text: string): string {
+  const head = n > 1 ? `TRANG ${i + 1}/${n}` : ''
+  const t = text.trim() ? `LỚP CHỮ CỦA ${n > 1 ? `TRANG ${i + 1}` : 'TRANG'}:\n${text}` : ''
+  return [head, t].filter(Boolean).join('\n')
+}
+
+async function geminiRequest(model: string, apiKey: string, system: string, images: string[], texts: string[], highRes: boolean) {
   const generationConfig: Record<string, unknown> = { temperature: 0, responseMimeType: 'application/json' }
   // Độ phân giải ảnh cao giúp đọc ô chữ viết tay nhỏ (model cũ không hỗ trợ -> gọi lại không có tham số)
   if (highRes) generationConfig.mediaResolution = 'MEDIA_RESOLUTION_HIGH'
+  const parts: Record<string, unknown>[] = []
+  images.forEach((img, i) => {
+    const label = pageLabel(i, images.length, texts[i] || '')
+    if (images.length > 1 && label) parts.push({ text: label.split('\n')[0] })
+    parts.push({ inline_data: { mime_type: 'image/jpeg', data: img } })
+    const rest = images.length > 1 ? label.split('\n').slice(1).join('\n') : label
+    if (rest) parts.push({ text: rest })
+  })
+  parts.push({ text: 'Đọc theo hướng dẫn và trả JSON.' })
   const r = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey },
     body: JSON.stringify({
       systemInstruction: { parts: [{ text: system }] },
-      contents: [
-        {
-          role: 'user',
-          parts: [
-            { inline_data: { mime_type: 'image/jpeg', data: image } },
-            { text: extraText ? `LỚP CHỮ CỦA TRANG:\n${extraText}\n\nĐọc theo hướng dẫn và trả JSON.` : 'Đọc ảnh theo hướng dẫn và trả JSON.' },
-          ],
-        },
-      ],
+      contents: [{ role: 'user', parts }],
       generationConfig,
     }),
   })
@@ -161,9 +201,9 @@ async function geminiRequest(model: string, apiKey: string, system: string, imag
   return { r, data }
 }
 
-async function callGemini(model: string, apiKey: string, system: string, image: string, extraText = ''): Promise<AiAttempt> {
-  let { r, data } = await geminiRequest(model, apiKey, system, image, true, extraText)
-  if (r.status === 400) ({ r, data } = await geminiRequest(model, apiKey, system, image, false, extraText))
+async function callGemini(model: string, apiKey: string, system: string, images: string[], texts: string[]): Promise<AiAttempt> {
+  let { r, data } = await geminiRequest(model, apiKey, system, images, texts, true)
+  if (r.status === 400) ({ r, data } = await geminiRequest(model, apiKey, system, images, texts, false))
   if (!r.ok) return { ok: false, status: r.status, error: data?.error?.message || `HTTP ${r.status}` }
   return extractGemini(data)
 }
@@ -179,28 +219,20 @@ function extractGemini(data: any): AiAttempt {
   return text ? { ok: true, text } : { ok: false, status: 502, error: 'Gemini không trả về nội dung.' }
 }
 
-async function callClaude(model: string, apiKey: string, system: string, image: string, extraText = ''): Promise<AiAttempt> {
+async function callClaude(model: string, apiKey: string, system: string, images: string[], texts: string[]): Promise<AiAttempt> {
+  const content: Record<string, unknown>[] = []
+  images.forEach((img, i) => {
+    const label = pageLabel(i, images.length, texts[i] || '')
+    if (images.length > 1) content.push({ type: 'text', text: `TRANG ${i + 1}/${images.length}` })
+    content.push({ type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: img } })
+    const rest = images.length > 1 ? label.split('\n').slice(1).join('\n') : label
+    if (rest) content.push({ type: 'text', text: rest })
+  })
+  content.push({ type: 'text', text: 'Đọc theo hướng dẫn. Chỉ trả về JSON, không giải thích, không markdown.' })
   const r = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({
-      model,
-      max_tokens: 4000,
-      temperature: 0,
-      system,
-      messages: [
-        {
-          role: 'user',
-          content: [
-            { type: 'image', source: { type: 'base64', media_type: 'image/jpeg', data: image } },
-            {
-              type: 'text',
-              text: `${extraText ? `LỚP CHỮ CỦA TRANG:\n${extraText}\n\n` : ''}Đọc theo hướng dẫn. Chỉ trả về JSON, không giải thích, không markdown.`,
-            },
-          ],
-        },
-      ],
-    }),
+    body: JSON.stringify({ model, max_tokens: 8000, temperature: 0, system, messages: [{ role: 'user', content }] }),
   })
   const data = await r.json().catch(() => null)
   if (!r.ok) return { ok: false, status: r.status, error: data?.error?.message || `HTTP ${r.status}` }
@@ -248,20 +280,31 @@ export default async function handler(req: Req, res: Res) {
   } catch {
     return res.status(400).json({ error: 'Yêu cầu không hợp lệ.' })
   }
-  const image = typeof body?.image === 'string' ? body.image : ''
-  if (image.length < 1000) return res.status(400).json({ error: 'Thiếu ảnh phiếu.' })
+  const images: string[] = Array.isArray(body?.images)
+    ? body.images.filter((x: unknown) => typeof x === 'string' && x.length >= 1000).slice(0, 8)
+    : typeof body?.image === 'string' && body.image.length >= 1000
+      ? [body.image]
+      : []
+  if (!images.length) return res.status(400).json({ error: 'Thiếu ảnh phiếu.' })
   const n1 = clampInt(body?.n1, 12, 0, 50)
   const n2 = clampInt(body?.n2, 4, 0, 10)
   const n3 = clampInt(body?.n3, 6, 0, 20)
   const offset = clampInt(body?.modelOffset, 0, 0, 10)
   // mode: 'key' | 'sheet' (phiếu viết tay kiểu cũ), 'fields' (phiếu tô ô: chỉ đọc chữ viết tay), 'keytable' (bảng đáp án)
   const m = String(body?.mode || 'sheet')
-  const pageText = m === 'keytable' && typeof body?.text === 'string' ? body.text.slice(0, 20000) : ''
+  // lớp chữ PDF của từng trang (bảng đáp án)
+  const texts: string[] =
+    m !== 'keytable'
+      ? []
+      : Array.isArray(body?.texts)
+        ? images.map((_, i) => (typeof body.texts[i] === 'string' ? body.texts[i].slice(0, 20000) : ''))
+        : [typeof body?.text === 'string' ? body.text.slice(0, 20000) : '']
+  const hasText = texts.some((t) => t.trim())
   const system =
     m === 'fields'
-      ? fieldsPrompt(body?.kind === 'class' ? 'class' : 'school', n3)
+      ? fieldsPrompt(body?.kind === 'class' ? 'class' : body?.kind === 'grid35' ? 'grid35' : 'school', n3)
       : m === 'keytable'
-        ? keyTablePrompt(n1, n2, n3, !!pageText.trim())
+        ? keyTablePrompt(n1, n2, n3, hasText, images.length)
         : systemPrompt(n1, n2, n3, m === 'key' ? 'key' : 'sheet')
 
   const geminiKey = env.GEMINI_API_KEY
@@ -278,7 +321,7 @@ export default async function handler(req: Req, res: Res) {
     // Xoay vòng danh sách theo offset: lần đọc đối chiếu dùng model khác lần đọc chính
     const models = base.slice(offset % base.length).concat(base.slice(0, offset % base.length))
     for (const model of models) {
-      const a = await callGemini(model, geminiKey, system, image, pageText)
+      const a = await callGemini(model, geminiKey, system, images, texts)
       if (a.ok) {
         try {
           return res.status(200).json({ data: parseJson(a.text || ''), provider: 'gemini', model })
@@ -295,7 +338,7 @@ export default async function handler(req: Req, res: Res) {
 
   if (claudeKey) {
     const model = env.CLAUDE_MODEL || DEFAULT_CLAUDE_MODEL
-    const a = await callClaude(model, claudeKey, system, image, pageText)
+    const a = await callClaude(model, claudeKey, system, images, texts)
     if (a.ok) {
       try {
         return res.status(200).json({ data: parseJson(a.text || ''), provider: 'claude', model })

@@ -9,7 +9,7 @@
  */
 import { supabase } from '../lib/supabase'
 import { Gray, OmrError, SheetTemplate, applyH, readBubbles, rgbaToGray, warpRegion, BubbleRead } from './bubbleOmr'
-import { classLayout, schoolTemplate } from './sheetTemplates'
+import { classLayout, grid35Template, schoolTemplate } from './sheetTemplates'
 
 // ---------------- KIỂU DỮ LIỆU ----------------
 
@@ -24,7 +24,9 @@ export interface PaperConfig {
   tfMethod: 'ministry_partial' | 'equal_split'
   /**
    * Loại phiếu: 'school' = phiếu tô ô in sẵn của trường (có phách),
-   * 'class' = phiếu tô ô do web tạo (đúng số câu), không có = phiếu viết tay kiểu cũ.
+   * 'class' = phiếu tô ô do web tạo (đúng số câu),
+   * 'grid35' = phiếu 35 câu in sẵn chữ A B C D trong ô (không có ô vuông đen, có Mã đề thi + Mã phách),
+   * không có = phiếu viết tay kiểu cũ.
    */
   sheet?: SheetKind
   /** Nhận diện bài làm: 'phach' = mã phách + số phách (bài đã cắt phách), 'name' = họ tên viết tay */
@@ -33,7 +35,7 @@ export interface PaperConfig {
   paper?: 'A4' | 'A5'
 }
 
-export type SheetKind = 'school' | 'class'
+export type SheetKind = 'school' | 'class' | 'grid35'
 
 export const DEFAULT_CONFIG: PaperConfig = {
   n1: 12,
@@ -636,11 +638,12 @@ export function answersToText(a: PaperAnswers): string {
 // ======================================================================
 
 export function isBubbleSheet(cfg: PaperConfig): boolean {
-  return cfg.sheet === 'school' || cfg.sheet === 'class'
+  return cfg.sheet === 'school' || cfg.sheet === 'class' || cfg.sheet === 'grid35'
 }
 
 export function templateFor(cfg: PaperConfig): SheetTemplate {
   if (cfg.sheet === 'school') return schoolTemplate()
+  if (cfg.sheet === 'grid35') return grid35Template()
   return classLayout({ n1: cfg.n1, n2: cfg.n2, n3: cfg.n3 }, cfg.paper).template
 }
 
@@ -699,13 +702,31 @@ function pxPerUnit(H: number[], t: SheetTemplate): number {
  * để báo đúng lỗi thay vì "không khớp mẫu".
  */
 function mismatchHint(g: Gray, cfg: PaperConfig): string {
-  try {
-    if (cfg.sheet === 'class') {
+  const isSchool = () => {
+    try {
       readBubbles(g, schoolTemplate(), { n1: 1, n2: 0 })
-      return 'Ảnh này là PHIẾU CỦA TRƯỜNG (40 – 6 – 8 câu), nhưng đợt chấm đang chọn "Phiếu tô ô do web tạo". Bấm "Đổi sang phiếu của trường" ở đầu trang rồi bấm Đọc lại.'
+      return true
+    } catch {
+      return false
     }
-  } catch {
-    return ''
+  }
+  const isGrid35 = () => {
+    try {
+      return readBubbles(g, grid35Template(), { n1: 1, n2: 0 }).quality >= 0.8
+    } catch {
+      return false
+    }
+  }
+  const SCHOOL = 'PHIẾU CỦA TRƯỜNG (40 – 6 – 8 câu, có 6 ô vuông đen)'
+  const G35 = 'PHIẾU 35 CÂU (chữ A B C D trong ô, không có ô vuông đen)'
+  const go = (name: string) => `Bấm "Đổi loại phiếu" ở đầu trang, chọn ${name}, rồi bấm Đọc lại.`
+  if (cfg.sheet === 'class') {
+    if (isSchool()) return `Ảnh này là ${SCHOOL}, nhưng đợt chấm đang chọn "Phiếu tô ô do web tạo". ${go('phiếu của trường')}`
+    if (isGrid35()) return `Ảnh này là ${G35}, nhưng đợt chấm đang chọn "Phiếu tô ô do web tạo". ${go('phiếu 35 câu')}`
+  } else if (cfg.sheet === 'school') {
+    if (isGrid35()) return `Ảnh này là ${G35}, nhưng đợt chấm đang chọn phiếu của trường. ${go('phiếu 35 câu')}`
+  } else if (cfg.sheet === 'grid35') {
+    if (isSchool()) return `Ảnh này là ${SCHOOL}, nhưng đợt chấm đang chọn phiếu 35 câu. ${go('phiếu của trường')}`
   }
   return ''
 }
@@ -746,13 +767,15 @@ function overlayImage(g: Gray, br: BubbleRead, t: SheetTemplate): string {
   for (const d of br.detail) {
     const R = (d.row.r ?? t.bubbleR) * scale
     d.centers.forEach((p, i) => {
+      // hàng cần rà: vòng cam quanh mọi ô; ô máy chọn (kể cả ở hàng cần rà): vòng xanh
       if (d.flagged) {
         ctx.strokeStyle = '#f59e0b'
         ctx.lineWidth = Math.max(2, R * 0.25)
         ctx.beginPath()
-        ctx.arc(X(p.x), Y(p.y), R * 1.35, 0, Math.PI * 2)
+        ctx.arc(X(p.x), Y(p.y), R * (d.chosen === i ? 1.75 : 1.35), 0, Math.PI * 2)
         ctx.stroke()
-      } else if (d.chosen === i) {
+      }
+      if (d.chosen === i) {
         ctx.strokeStyle = '#16a34a'
         ctx.lineWidth = Math.max(2, R * 0.3)
         ctx.beginPath()
@@ -881,7 +904,7 @@ export async function readBubbleSheet(
         }
         const n = (s: string) => s.replace(/\s+/g, '').toUpperCase()
         if (n(a.maDe) !== n(b.maDe)) fields.flags['made'] = `Mã đề đọc 2 lần khác nhau: ${show(a.maDe)} / ${show(b.maDe)}`
-        if (cfg.sheet === 'school' && (normMaPhach(a.maPhach) !== normMaPhach(b.maPhach) || normSoPhach(a.soPhach) !== normSoPhach(b.soPhach)))
+        if ((cfg.sheet === 'school' || cfg.sheet === 'grid35') && (normMaPhach(a.maPhach) !== normMaPhach(b.maPhach) || normSoPhach(a.soPhach) !== normSoPhach(b.soPhach)))
           fields.flags['phach'] = `Phách đọc 2 lần khác nhau: ${a.maPhach || '?'} / ${a.soPhach || '?'} và ${b.maPhach || '?'} / ${b.soPhach || '?'}`
         if (cfg.sheet === 'class' && stripVN(a.name) !== stripVN(b.name))
           fields.flags['name'] = `Họ tên đọc 2 lần khác nhau: ${a.name || 'trống'} / ${b.name || 'trống'}`
@@ -892,7 +915,7 @@ export async function readBubbleSheet(
     answers.p3 = fields.p3
     Object.assign(flags, fields.flags)
   } else {
-    flags['ai'] = `Chưa đọc được phần viết tay (mã đề${cfg.sheet === 'school' ? ', phách' : ', họ tên'}${cfg.n3 ? ', Phần III' : ''}): ${aiError}. Phần I, II vẫn đã đọc xong — cô nhập tay phần còn lại hoặc bấm Đọc lại sau.`
+    flags['ai'] = `Chưa đọc được phần viết tay (mã đề${cfg.sheet === 'class' ? ', họ tên' : ', phách'}${cfg.n3 ? ', Phần III' : ''}): ${aiError.replace(/\.+$/, '')}. ${cfg.n2 ? 'Phần I, II' : 'Phần trắc nghiệm'} vẫn đã đọc xong — cô nhập tay phần còn lại hoặc bấm Đọc lại sau.`
   }
   return {
     name: fields?.name || '',
@@ -1040,59 +1063,100 @@ function mergeKeyItems(list: KeyTableItem[], cfg: PaperConfig): KeyTableItem[] {
   return [...map.values()]
 }
 
+/** Một lần gọi AI đọc bảng đáp án (2 model đối chiếu). body: image/text (1 trang) hoặc images/texts (nhiều trang) */
+async function readKeyOnce(body: Record<string, unknown>, cfg: PaperConfig): Promise<KeyTableItem[]> {
+  const [ra, rb] = await Promise.allSettled([callOmrRaw({ ...body, modelOffset: 0 }), callOmrRaw({ ...body, modelOffset: 1 })])
+  const ok = [ra, rb].filter((x): x is PromiseFulfilledResult<{ data: unknown; model: string }> => x.status === 'fulfilled')
+  if (!ok.length) throw new Error((ra as PromiseRejectedResult).reason?.message || 'AI lỗi')
+  const A = parseKeyTable(ok[0].value.data, cfg)
+  if (ok.length === 2 && ok[0].value.model !== ok[1].value.model) {
+    const B = parseKeyTable(ok[1].value.data, cfg)
+    for (const a of A) {
+      const b = B.find((x) => x.maDe === a.maDe) || (A.length === 1 && B.length === 1 ? B[0] : undefined)
+      if (!b) {
+        a.flags['all'] = 'Lần đọc thứ hai không thấy mã đề này — hãy rà kĩ'
+        continue
+      }
+      const c = crossCheck(
+        { name: '', classLabel: '', maDe: a.maDe, answers: a.answers, flags: a.flags, note: '', model: '' },
+        { name: '', classLabel: '', maDe: b.maDe, answers: fitAnswers(b.answers, cfg), flags: {}, note: '', model: '' },
+        cfg,
+      )
+      delete c.flags['made']
+      a.flags = { ...b.flags, ...c.flags }
+    }
+    if (B.length > A.length) for (const b of B) if (!A.some((x) => x.maDe === b.maDe)) A.push({ ...b, flags: { ...b.flags, all: 'Chỉ lần đọc thứ hai thấy mã đề này — hãy rà kĩ' } })
+  } else {
+    for (const a of A) a.flags['all'] = a.flags['all'] || 'Chỉ đọc được 1 lần (không có model thứ hai để đối chiếu) — hãy rà kĩ'
+  }
+  return A
+}
+
+/** Nén lại ảnh JPEG (cạnh dài ≤ maxSide) để vừa giới hạn dung lượng gửi lên máy chủ */
+export async function shrinkJpeg(dataUrl: string, maxSide: number, quality: number): Promise<string> {
+  const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+    const el = new Image()
+    el.onload = () => resolve(el)
+    el.onerror = () => reject(new Error('Không mở được ảnh.'))
+    el.src = dataUrl
+  })
+  return canvasToJpeg(img, img.naturalWidth, img.naturalHeight, maxSide, quality)
+}
+
+const strip64 = (d: string) => d.replace(/^data:image\/\w+;base64,/, '')
+/** Vercel giới hạn thân yêu cầu ~4,5 MB */
+const MAX_BODY = 3_800_000
+
 /**
  * Đọc bảng đáp án từ các trang (ảnh + lớp chữ PDF nếu có).
- * Đọc 2 lần bằng 2 model và đối chiếu từng ô; trả về đáp án theo từng mã đề.
+ * NHIỀU TRANG: gửi tất cả các trang trong MỘT lần đọc để AI ghép bảng bị ngắt trang
+ * (trang sau thường không lặp lại hàng tiêu đề mã đề). Quá dung lượng / lỗi -> đọc từng trang rồi ghép theo mã đề.
+ * Mỗi lần đọc dùng 2 model và đối chiếu từng ô.
  */
 export async function readKeyTable(pagesIn: (string | KeyPage)[], cfg: PaperConfig, onProgress?: (i: number) => void): Promise<KeyTableItem[]> {
   const pages: KeyPage[] = pagesIn.map((p) => (typeof p === 'string' ? { img: p } : p))
-  const all: KeyTableItem[] = []
+  const texts = pages.map((p) => (p.text || '').slice(0, 20000))
+  const finalize = (list: KeyTableItem[]) => {
+    const merged = mergeKeyItems(list, cfg)
+    // Đáp án do AI đọc: luôn yêu cầu giáo viên đối chiếu với bảng gốc trước khi lưu
+    for (const m of merged)
+      if (!m.flags['all']) m.flags['all'] = 'Đáp án do AI đọc từ bảng — đối chiếu từng câu với ảnh bảng gốc bên cạnh rồi bấm "Đã rà xong"'
+    return merged
+  }
   let lastErr = ''
+  if (pages.length > 1) {
+    onProgress?.(0)
+    let imgs = pages.map((p) => strip64(p.img))
+    const size = () => imgs.reduce((t, x) => t + x.length, 0) + texts.reduce((t, x) => t + x.length * 3, 0)
+    if (size() > MAX_BODY) imgs = (await Promise.all(pages.map((p) => shrinkJpeg(p.img, 2200, 0.8)))).map(strip64)
+    if (size() > MAX_BODY) imgs = (await Promise.all(pages.map((p) => shrinkJpeg(p.img, 1700, 0.75)))).map(strip64)
+    if (size() <= MAX_BODY) {
+      try {
+        const A = await readKeyOnce({ images: imgs, texts, mode: 'keytable', n1: cfg.n1, n2: cfg.n2, n3: cfg.n3 }, cfg)
+        if (A.length) {
+          for (const a of A) a.sources = pages.map((p) => p.img)
+          return finalize(A)
+        }
+      } catch (e) {
+        lastErr = (e as Error).message
+      }
+    }
+  }
+  const all: KeyTableItem[] = []
   for (let p = 0; p < pages.length; p++) {
     onProgress?.(p + 1)
-    const text = (pages[p].text || '').slice(0, 20000)
-    const body = {
-      image: pages[p].img.replace(/^data:image\/\w+;base64,/, ''),
-      text,
-      mode: 'keytable',
-      n1: cfg.n1,
-      n2: cfg.n2,
-      n3: cfg.n3,
-    }
-    const [ra, rb] = await Promise.allSettled([callOmrRaw({ ...body, modelOffset: 0 }), callOmrRaw({ ...body, modelOffset: 1 })])
-    const ok = [ra, rb].filter((x): x is PromiseFulfilledResult<{ data: unknown; model: string }> => x.status === 'fulfilled')
-    if (!ok.length) {
-      lastErr = (ra as PromiseRejectedResult).reason?.message || 'AI lỗi'
-      continue
-    }
-    const A = parseKeyTable(ok[0].value.data, cfg)
-    if (ok.length === 2 && ok[0].value.model !== ok[1].value.model) {
-      const B = parseKeyTable(ok[1].value.data, cfg)
+    try {
+      const A = await readKeyOnce({ image: strip64(pages[p].img), text: texts[p], mode: 'keytable', n1: cfg.n1, n2: cfg.n2, n3: cfg.n3 }, cfg)
       for (const a of A) {
-        const b = B.find((x) => x.maDe === a.maDe) || (A.length === 1 && B.length === 1 ? B[0] : undefined)
-        if (!b) {
-          a.flags['all'] = 'Lần đọc thứ hai không thấy mã đề này — hãy rà kĩ'
-          continue
-        }
-        const c = crossCheck(
-          { name: '', classLabel: '', maDe: a.maDe, answers: a.answers, flags: a.flags, note: '', model: '' },
-          { name: '', classLabel: '', maDe: b.maDe, answers: fitAnswers(b.answers, cfg), flags: {}, note: '', model: '' },
-          cfg,
-        )
-        delete c.flags['made']
-        a.flags = { ...b.flags, ...c.flags }
+        a.sources = [pages[p].img]
+        // trang không ghi mã đề (bảng bị ngắt trang) -> không tự ghép, bắt giáo viên rà
+        if (!a.maDe && pages.length > 1) a.flags['all'] = `Trang ${p + 1} không ghi mã đề (bảng bị ngắt trang?) — nhập mã đề và đối chiếu kĩ`
       }
-      if (B.length > A.length) for (const b of B) if (!A.some((x) => x.maDe === b.maDe)) A.push({ ...b, flags: { ...b.flags, all: 'Chỉ lần đọc thứ hai thấy mã đề này — hãy rà kĩ' } })
-    } else {
-      for (const a of A) a.flags['all'] = a.flags['all'] || 'Chỉ đọc được 1 lần (không có model thứ hai để đối chiếu) — hãy rà kĩ'
+      all.push(...A)
+    } catch (e) {
+      lastErr = (e as Error).message
     }
-    for (const a of A) a.sources = [pages[p].img]
-    all.push(...A)
   }
   if (!all.length) throw new Error(lastErr || 'Không tìm thấy bảng đáp án trong file.')
-  const merged = mergeKeyItems(all, cfg)
-  // Đáp án do AI đọc: luôn yêu cầu giáo viên đối chiếu với bảng gốc trước khi lưu
-  for (const m of merged)
-    if (!m.flags['all']) m.flags['all'] = 'Đáp án do AI đọc từ bảng — đối chiếu từng câu với ảnh bảng gốc bên cạnh rồi bấm "Đã rà xong"'
-  return merged
+  return finalize(all)
 }
