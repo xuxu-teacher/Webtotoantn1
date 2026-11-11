@@ -870,9 +870,11 @@ export async function readBubbleSheet(
   answers.p1 = br.p1
   answers.p2 = br.p2
   const flags: Record<CellId, string> = { ...br.flags }
-  const overlay = overlayImage(g, br, t)
+  // ảnh xám GIỮ mực đỏ: số phách / điểm thường viết mực đỏ (ảnh dùng đọc ô tô đã xoá mực đỏ của giáo viên chấm)
+  const gc = rgbaToGray(rgba, w, h, 2200, false)
+  const overlay = overlayImage(gc, br, t)
 
-  const img = handwritingImage(g, br, t).replace(/^data:image\/\w+;base64,/, '')
+  const img = handwritingImage(gc, br, t).replace(/^data:image\/\w+;base64,/, '')
   const body = { image: img, mode: 'fields', kind: cfg.sheet, n1: cfg.n1, n2: cfg.n2, n3: cfg.n3 }
   let fields: FieldsRead | null = null
   let checked = false

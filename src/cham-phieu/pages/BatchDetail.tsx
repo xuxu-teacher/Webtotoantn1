@@ -2,7 +2,7 @@ import { ChangeEvent, Fragment, useEffect, useMemo, useRef, useState } from 'rea
 import { Link, useParams } from 'react-router-dom'
 import * as XLSX from 'xlsx'
 import { supabase } from '../lib/supabase'
-import { connectDrive, disconnectDrive, driveConfigured, driveConnected, driveViewUrl, onDriveChange, uploadImage } from '../lib/drive'
+import { connectDrive, disconnectDrive, driveConfigured, driveConnected, driveOriginOk, driveViewUrl, mainUrlForHere, onDriveChange, uploadImage } from '../lib/drive'
 import { useAuth } from '../auth'
 import CameraCapture from '../components/CameraCapture'
 import PaperAnswerGrid from '../components/PaperAnswerGrid'
@@ -1047,6 +1047,12 @@ function GradeSection(props: {
                   (ngắt)
                 </a>
               </span>
+            ) : !driveOriginOk() ? (
+              mainUrlForHere() ? (
+                <a className="btn secondary" href={mainUrlForHere()!} title="Google chỉ cho kết nối Drive khi mở web bằng địa chỉ chính">
+                  ☁️ Mở địa chỉ chính để lưu ảnh vào Drive
+                </a>
+              ) : null
             ) : (
               <button className="btn secondary" onClick={connect} title="Ảnh phiếu gốc + ảnh máy đọc được cất vào Drive của chính cô; web chỉ thấy các file do nó tạo">
                 ☁️ Kết nối Google Drive để lưu ảnh phiếu

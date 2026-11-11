@@ -78,12 +78,13 @@ export class OmrError extends Error {}
 // ---------------- ẢNH XÁM ----------------
 
 /**
- * RGBA -> ảnh xám. Lấy min(R,G,B) để mực xanh/tím, bút chì, bút đen đều thành "đậm",
- * nền giấy trắng/ngà vẫn sáng. Thu nhỏ để cạnh dài ≤ maxSide.
+ * RGBA -> ảnh xám: bút chì, bút đen, mực xanh/tím thành "đậm"; mực đỏ (giáo viên chấm) và nền giấy sáng.
+ * suppressRed = false: giữ mực đỏ (dùng cho ảnh chữ viết gửi AI — số phách thường viết mực đỏ — và ảnh đối chiếu).
+ * Thu nhỏ để cạnh dài ≤ maxSide.
  * Cân bằng trắng trước: ảnh chụp dưới đèn vàng (buổi tối) làm kênh xanh lam tối hẳn -> min(R,G,B) của giấy trắng
  * cũng tối, ô trống bị coi như "tô mờ". Mỗi kênh được nhân hệ số để màu giấy (phân vị 92%) trở về trung tính.
  */
-export function rgbaToGray(rgba: Uint8ClampedArray | Uint8Array, w: number, h: number, maxSide = 2000): Gray {
+export function rgbaToGray(rgba: Uint8ClampedArray | Uint8Array, w: number, h: number, maxSide = 2000, suppressRed = true): Gray {
   const s = Math.min(1, maxSide / Math.max(w, h))
   const W = Math.max(1, Math.round(w * s))
   const Hh = Math.max(1, Math.round(h * s))
@@ -116,11 +117,18 @@ export function rgbaToGray(rgba: Uint8ClampedArray | Uint8Array, w: number, h: n
     return lut
   })
   const [LR, LG, LB] = luts
+  // min(R,G,B) (sau cân bằng trắng): bút chì, bút đen, mực xanh/tím đều thành "đậm".
+  // MỰC ĐỎ của giáo viên chấm bài (khoanh, gạch chéo đè lên ô) — kể cả đỏ sẫm — bị nâng sáng theo độ "đỏ"
+  // (R vượt hẳn G, B) -> không bị coi là ô tô.
   const px = (j: number) => {
     const r = LR[rgba[j]],
       g = LG[rgba[j + 1]],
       b = LB[rgba[j + 2]]
-    return r < g ? (r < b ? r : b) : g < b ? g : b
+    const mn = r < g ? (r < b ? r : b) : g < b ? g : b
+    // trừ 4 để bỏ qua nhiễu màu nhỏ của ảnh JPEG (vùng tối, ảnh nhiễu)
+    const red = r - (g > b ? g : b)
+    const v = suppressRed && red > 4 ? mn + 8 * (red - 4) : mn
+    return v > 255 ? 255 : v
   }
   if (s === 1) {
     for (let i = 0, j = 0; i < out.length; i++, j += 4) out[i] = px(j)
@@ -1301,6 +1309,27 @@ export function readBubbles(g: Gray, t: SheetTemplate, opt: ReadBubblesOptions):
     return { b, spread }
   })
   const lo0 = 0.13
+  const emptyMed = med(rowEmpties.flat())
+
+  // Mức tô CỦA CHÍNH PHIẾU NÀY: học sinh tô bút chì nhạt thì ô tô chỉ sẫm ~0,12–0,25 (bút mực ~0,6–0,9).
+  // Lấy trung vị độ chênh (ô đậm nhất − mức ô trống) của các hàng có ô tô rõ hơn hẳn nhiễu
+  // -> ngưỡng "tô rõ" tỉ lệ theo mức tô của học sinh, không dùng một ngưỡng cố định cho mọi phiếu.
+  const rowRise = detail.map((d, k) => {
+    const mx = Math.max(...d.scores)
+    const mn = Math.min(...d.scores)
+    return mx - Math.min(baseOf[k].b, mn)
+  })
+  // tính riêng Phần I và Phần II (ô Phần II nhỏ hơn, học sinh thường tô nhạt hơn); phân vị 25%: phiếu vừa tô
+  // bút mực vừa tô bút chì thì lấy theo mức bút chì
+  const riseOfPart = (part: number) => {
+    const c = rowRise
+      .filter((r, k) => detail[k].row.part === part && r >= Math.max(0.07, 6 * Math.min(0.05, baseOf[k].spread)))
+      .sort((a, b) => a - b)
+    return c.length >= 3 ? c[Math.floor(c.length * 0.25)] : null
+  }
+  const r1 = riseOfPart(1),
+    r2 = riseOfPart(2)
+  const sheetRiseOf = (part: number) => (part === 1 ? r1 ?? r2 : r2 ?? r1) ?? 0.5
 
   // Độ rõ viền ô trống ở vị trí đã dò (căn đúng: viền rõ; lệch hàng/cột: gần như mất viền)
   const emptyRings = detail
@@ -1308,6 +1337,14 @@ export function readBubbles(g: Gray, t: SheetTemplate, opt: ReadBubblesOptions):
     .filter((v) => Number.isFinite(v))
     .sort((a, b) => a - b)
   const ringRef = emptyRings.length ? emptyRings[Math.floor(emptyRings.length / 2)] : 0
+
+  // độ rõ viền (trung vị) của các ô trống trong hàng k
+  const ringMedOf = (k: number) => {
+    const d = detail[k]
+    const base = Math.min(baseOf[k].b, Math.min(...d.scores))
+    const er = d.scores.map((v, i) => (v < Math.max(lo0, base + 0.07) ? d.rings[i] : NaN)).filter((v) => Number.isFinite(v)).sort((a, b) => a - b)
+    return er.length ? er[Math.floor((er.length - 1) / 2)] : Infinity
+  }
 
   const p1: (string | null)[] = Array.from({ length: opt.n1 }, () => null)
   const p2: (boolean | null)[][] = Array.from({ length: opt.n2 }, () => [null, null, null, null])
@@ -1326,17 +1363,22 @@ export function readBubbles(g: Gray, t: SheetTemplate, opt: ReadBubblesOptions):
     // Quyết định dựa trên ĐỘ CHÊNH: ô được chọn phải sẫm hẳn so với mức ô trống của vùng (base)
     // và sẫm hẳn so với ô đứng thứ hai trong hàng. Ngưỡng tự giãn khi ảnh nhiễu (spread lớn).
     const rise = top.v - base
-    const strong = rise >= Math.max(0.15, 4 * spread) && top.v >= hiGlobal * 0.75
+    // tô rõ: (a) mức bút mực/bút chì đậm như trước, hoặc (b) mức tô nhạt nhưng vẫn ≥ 45% mức tô của chính phiếu này
+    // và cao hơn hẳn nhiễu ô trống (≥ 5 lần độ phân tán, ≥ 0,08)
+    const strongInk = rise >= Math.max(0.15, 4 * spread) && top.v >= hiGlobal * 0.75
+    const strongLight = rise >= Math.max(0.08, 5 * spread, 0.45 * sheetRiseOf(row.part))
+    const strong = strongInk || strongLight
+    const minGap = strongInk ? Math.max(0.12, 0.35 * rise) : Math.max(0.06, 0.5 * rise)
     const gap = top.v - second.v
     const secondRise = second.v - base
     let chosen: number | null = null
     let why = ''
-    if (strong && gap >= Math.max(0.12, 0.35 * rise)) {
+    if (strong && gap >= minGap) {
       chosen = top.i
       if (secondRise >= Math.max(0.1, 4 * spread) && second.v > top.v * 0.45)
         why = `Ô ${name(top.i)} tô đậm nhưng ô ${name(second.i)} có vết mờ (tẩy chưa sạch?)`
     } else if (strong) {
-      const many = order.filter((o) => o.v - base >= Math.max(0.15, 4 * spread) && top.v - o.v < Math.max(0.12, 0.35 * rise))
+      const many = order.filter((o) => o.v - base >= Math.min(Math.max(0.15, 4 * spread), Math.max(0.08, 5 * spread, 0.45 * sheetRiseOf(row.part))) && top.v - o.v < minGap)
       why =
         many.length >= 2
           ? `Tô ${many.length} ô (${many.map((o) => name(o.i)).join(', ')})`
@@ -1345,11 +1387,24 @@ export function readBubbles(g: Gray, t: SheetTemplate, opt: ReadBubblesOptions):
       why = `Ô ${name(top.i)} tô mờ / có vết tẩy — chưa chắc học sinh chọn`
     } else if (rowMin - baseOf[k].b >= 0.15 && rowMin >= hiGlobal * 0.75) {
       why = 'Tất cả các ô của hàng đều sẫm (tô hết?) — kiểm tra lại'
+    } else if (top.v >= Math.max(0.11, emptyMed + 0.07)) {
+      // không chọn được ô nào nhưng hàng sẫm hơn hẳn ô trống thông thường của phiếu (vùng tối / nhoè / tô nhạt cả hai ô)
+      // -> không bao giờ để trống mà không báo
+      why = 'Hàng này sẫm bất thường (bóng tối / nhoè / tô nhạt) — máy không chắc ô nào được tô, kiểm tra lại'
+    } else if (chosen === null) {
+      // câu bỏ trống hiếm gặp; ô tô quá nhạt trên ảnh tối có thể lẫn vào nhiễu -> luôn để giáo viên xác nhận
+      why = 'Không thấy ô nào được tô — kiểm tra lại (học sinh bỏ trống?)'
     }
     // Vị trí ô không khớp chắc (giấy cong / nhoè / che khuất) -> không đoán, để giáo viên xem
     if (!why && ringRef > 20) {
-      const er = scores.map((v, i) => (v < Math.max(lo0, base + 0.07) ? d.rings[i] : NaN)).filter((v) => Number.isFinite(v)).sort((a, b) => a - b)
-      const weak = er.length > 0 && er[Math.floor((er.length - 1) / 2)] < ringRef * 0.3
+      const rm = ringMedOf(k)
+      // Lệch vị trí thật (giấy cong, ảnh nhoè) làm yếu viền ở cả các hàng kề nhau. Một hàng đơn lẻ yếu viền
+      // trong khi đã chọn được ô rõ ràng thường chỉ do vết mực đỏ chấm bài đè lên viền ô -> không cần rà.
+      const near = rowPos
+        .map((p, j) => ({ j, dd: j === k ? Infinity : Math.hypot(p.x - rowPos[k].x, p.y - rowPos[k].y) }))
+        .sort((a, b) => a.dd - b.dd)
+        .slice(0, 2)
+      const weak = rm < ringRef * 0.3 && (chosen === null || near.some((n) => ringMedOf(n.j) < ringRef * 0.5))
       if (weak) why = chosen === null ? 'Không thấy rõ các ô của hàng này (ảnh mờ / giấy cong / bị che) — kiểm tra lại' : 'Vị trí ô hàng này chưa khớp chắc — kiểm tra lại'
     }
     d.chosen = chosen

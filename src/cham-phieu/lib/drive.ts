@@ -15,6 +15,30 @@ const ROOT_NAME = 'Chấm phiếu – ảnh bài làm'
 
 export const driveConfigured = Boolean(CLIENT_ID)
 
+/**
+ * Google chỉ cho đăng nhập từ các địa chỉ đã khai báo trong Google Cloud (Authorized JavaScript origins).
+ * Link xem trước của Vercel (VD webtotoantn1-abc123-xuxu3.vercel.app) đổi sau mỗi lần cập nhật nên không khai báo được
+ * -> phải mở web bằng địa chỉ chính.
+ */
+const MAIN_ORIGINS: Record<string, string> = {
+  webtotoantn1: 'https://xuxu-website.vercel.app',
+  'xuxu-website': 'https://xuxu-website.vercel.app',
+  'thithu-xuxu': 'https://thithu-xuxu.vercel.app',
+}
+const ALLOWED = new Set(['https://xuxu-website.vercel.app', 'https://thithu-xuxu.vercel.app', 'http://localhost:5173'])
+
+/** Đang mở bằng địa chỉ được Google cho phép? */
+export function driveOriginOk(): boolean {
+  return ALLOWED.has(window.location.origin)
+}
+
+/** Địa chỉ chính tương ứng với trang đang mở (để chuyển sang khi đang ở link xem trước của Vercel) */
+export function mainUrlForHere(): string | null {
+  const host = window.location.hostname
+  const key = Object.keys(MAIN_ORIGINS).find((k) => host === `${k}.vercel.app` || host.startsWith(`${k}-`))
+  return key ? MAIN_ORIGINS[key] + window.location.pathname + window.location.search : null
+}
+
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type Gis = any
 
@@ -60,6 +84,10 @@ export function onDriveChange(f: (on: boolean) => void): () => void {
  */
 export async function connectDrive(emailHint?: string): Promise<string> {
   if (!CLIENT_ID) throw new Error('Web chưa cấu hình Google Drive (thiếu VITE_GOOGLE_CLIENT_ID).')
+  if (!driveOriginOk())
+    throw new Error(
+      `Google chỉ cho kết nối Drive khi mở web bằng địa chỉ chính${mainUrlForHere() ? ` (${new URL(mainUrlForHere()!).origin})` : ''}, không dùng link xem trước của Vercel. Hãy mở lại web bằng địa chỉ đó.`,
+    )
   if (driveConnected()) return token!.value
   const google = await loadGis()
   return new Promise<string>((resolve, reject) => {
