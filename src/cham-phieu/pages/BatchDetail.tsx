@@ -93,6 +93,8 @@ interface QueueItem {
   studentId: string // '' = chưa chọn, '__other' = không có trong danh sách
   studentName: string
   maDe: string
+  /** giáo viên đã tự chọn mã đề (không tự khớp lại khi danh sách đáp án thay đổi) */
+  maDePicked?: boolean
   maPhach: string
   soPhach: string
   savedId?: string
@@ -124,6 +126,32 @@ function openImage(e: { preventDefault: () => void }, dataUrl: string | undefine
       else window.open(url, '_blank')
     })
     .catch(() => w?.close())
+}
+
+/** Chuẩn hoá mã đề để so khớp: bỏ khoảng trắng/dấu, không phân biệt hoa thường, bỏ số 0 ở đầu ("0502" = "502") */
+const normMaDe = (v: string | null | undefined) =>
+  String(v ?? '')
+    .toUpperCase()
+    .replace(/[^0-9A-Z]/g, '')
+    .replace(/^0+(?=\d)/, '')
+
+/**
+ * Khớp mã đề đọc được trên phiếu với các mã đề ĐÃ CÓ ĐÁP ÁN của đợt chấm.
+ * Nguyên tắc: KHÔNG BAO GIỜ tự gán một mã đề khác với mã ghi trên phiếu
+ * (trước đây đợt chấm chỉ có 1 mã thì phiếu ghi 502, 503… vẫn bị gán và chấm theo mã đó).
+ */
+function matchMaDe(read: string | null | undefined, ks: KeyRow[]): { maDe: string; flag?: string } {
+  const readMa = normMaDe(read)
+  const exact = readMa ? ks.find((k) => normMaDe(k.ma_de) === readMa) : undefined
+  if (exact) return { maDe: exact.ma_de }
+  if (readMa)
+    return {
+      maDe: '',
+      flag: `Phiếu ghi mã "${String(read).trim()}" nhưng đợt chấm chưa có đáp án mã này (đang có: ${ks.map((k) => k.ma_de).join(', ')}). Nhập đáp án mã ${String(read).trim()} ở tab "1. Đáp án", hoặc chọn mã đề đúng nếu máy đọc nhầm`,
+    }
+  // không đọc được mã đề: đợt chấm chỉ có 1 mã thì dùng mã đó, nhiều mã thì giáo viên chọn
+  if (ks.length === 1) return { maDe: ks[0].ma_de }
+  return { maDe: '', flag: 'Không đọc được mã đề — hãy chọn' }
 }
 
 let uidSeq = 0
@@ -167,6 +195,8 @@ export default function TeacherPaperGradingDetail() {
   const [loadError, setLoadError] = useState('')
   const [tab, setTab] = useState<'key' | 'grade' | 'result'>('key')
   const [rescoring, setRescoring] = useState(false)
+  // mã đề cần nhập đáp án (bấm từ tab Chấm phiếu) -> tab Đáp án mở sẵn ô nhập với mã này
+  const [wantKey, setWantKey] = useState<{ maDe: string; n: number } | null>(null)
   const firstLoad = useRef(true)
 
   const cfg = batch?.config
@@ -330,7 +360,16 @@ export default function TeacherPaperGradingDetail() {
       </div>
 
       {tab === 'key' && (
-        <KeySection batchId={batch.id} teacherId={teacher.id} cfg={cfg} keys={keys} sheets={sheets} onChanged={loadAll} />
+        <KeySection
+          batchId={batch.id}
+          teacherId={teacher.id}
+          cfg={cfg}
+          keys={keys}
+          sheets={sheets}
+          onChanged={loadAll}
+          wantKey={wantKey}
+          onWantKeyDone={() => setWantKey(null)}
+        />
       )}
       {/* Giữ trang chấm luôn được gắn để không mất hàng đợi khi chuyển tab */}
       <div style={{ display: tab === 'grade' ? 'block' : 'none' }}>
@@ -344,6 +383,10 @@ export default function TeacherPaperGradingDetail() {
           sheets={sheets}
           onSaved={loadAll}
           hasClass={!!batch.class_id}
+          onNeedKey={(maDe) => {
+            setWantKey((w) => ({ maDe, n: (w?.n || 0) + 1 }))
+            setTab('key')
+          }}
         />
       </div>
       {tab === 'result' && <ResultSection batch={batch} cfg={cfg} keys={keys} sheets={sheets} roster={roster} onChanged={loadAll} />}
@@ -362,8 +405,10 @@ function KeySection(props: {
   keys: KeyRow[]
   sheets: SheetRow[]
   onChanged: () => Promise<void>
+  wantKey?: { maDe: string; n: number } | null
+  onWantKeyDone?: () => void
 }) {
-  const { batchId, teacherId, cfg, keys, sheets, onChanged } = props
+  const { batchId, teacherId, cfg, keys, sheets, onChanged, wantKey, onWantKeyDone } = props
   const bubble = isBubbleSheet(cfg)
   const [draft, setDraft] = useState<KeyDraft | null>(null)
   const [pending, setPending] = useState<KeyTableItem[]>([]) // các mã đề đọc được từ bảng đáp án, chờ rà lần lượt
@@ -377,6 +422,19 @@ function KeySection(props: {
   function startNew() {
     setDraft({ maDe: '', answers: emptyAnswers(cfg), flags: {}, reading: false, error: '' })
   }
+
+  // Được gọi từ tab Chấm phiếu ("+ Nhập đáp án mã 503"): mở sẵn ô nhập đáp án với mã đề đó
+  useEffect(() => {
+    if (!wantKey) return
+    const old = keys.find((k) => normMaDe(k.ma_de) === normMaDe(wantKey.maDe))
+    setDraft(
+      old
+        ? { id: old.id, maDe: old.ma_de, answers: old.answers, flags: {}, reading: false, error: '' }
+        : { maDe: wantKey.maDe, answers: emptyAnswers(cfg), flags: {}, reading: false, error: '' },
+    )
+    onWantKeyDone?.()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wantKey])
 
   async function readKeyImage(dataUrl: string) {
     setDraft((d) => (d ? { ...d, dataUrl, reading: true, error: '' } : d))
@@ -486,7 +544,7 @@ function KeySection(props: {
     const bad = invalidShortKeys(draft.answers)
     const errs: string[] = []
     if (!maDe) errs.push('Chưa nhập mã đề.')
-    if (keys.some((k) => k.ma_de === maDe && k.id !== draft.id)) errs.push(`Mã đề ${maDe} đã có đáp án.`)
+    if (keys.some((k) => normMaDe(k.ma_de) === normMaDe(maDe) && k.id !== draft.id)) errs.push(`Mã đề ${maDe} đã có đáp án.`)
     if (miss.length) errs.push(`Còn trống: ${miss.join(', ')}.`)
     if (bad.length) errs.push(`Đáp án Phần 3 không phải số: ${bad.join(', ')}.`)
     if (Object.keys(draft.flags).length) errs.push('Còn ô tô vàng chưa rà — kiểm tra rồi bấm "Đã rà xong các ô vàng".')
@@ -738,6 +796,8 @@ function GradeSection(props: {
   sheets: SheetRow[]
   onSaved: () => Promise<void>
   hasClass: boolean
+  /** mở tab Đáp án để nhập đáp án cho một mã đề chưa có */
+  onNeedKey: (maDe: string) => void
 }) {
   const [queue, setQueue] = useState<QueueItem[]>([])
   const [camera, setCamera] = useState(false)
@@ -746,7 +806,7 @@ function GradeSection(props: {
   const [msg, setMsg] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
   const busy = useRef(false)
-  const { batchId, batchTitle, teacherId, cfg, keys, roster, sheets, onSaved, hasClass } = props
+  const { batchId, batchTitle, teacherId, cfg, keys, roster, sheets, onSaved, hasClass, onNeedKey } = props
   const { teacher } = useAuth()
   const [driveOn, setDriveOn] = useState(driveConnected())
   // giáo viên đã chọn lưu ảnh vào Drive trong phiên này -> khi token hết hạn, lần bấm Lưu kế tiếp tự xin lại
@@ -863,14 +923,9 @@ function GradeSection(props: {
           if (!rs.length && !r.name) flags['name'] = 'Không đọc được họ tên'
         }
         // Khớp mã đề
-        let maDe = ''
-        const readMa = r.maDe.replace(/\s+/g, '')
-        const exact = ks.find((k) => k.ma_de.replace(/\s+/g, '') === readMa)
-        if (exact) maDe = exact.ma_de
-        else if (ks.length === 1) {
-          maDe = ks[0].ma_de
-          if (readMa) flags['made'] = `Phiếu ghi mã "${r.maDe}" nhưng đợt chấm chỉ có mã ${ks[0].ma_de}`
-        } else flags['made'] = readMa ? `Mã đề "${r.maDe}" chưa có đáp án` : 'Không đọc được mã đề — hãy chọn'
+        const mm = matchMaDe(r.maDe, ks)
+        const maDe = mm.maDe
+        if (mm.flag) flags['made'] = mm.flag
         update(next.uid, {
           status: 'review',
           read: r,
@@ -894,6 +949,43 @@ function GradeSection(props: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queue])
 
+  // Vừa nhập thêm / sửa / xoá đáp án ở tab 1 -> khớp lại mã đề cho các phiếu đang chờ rà
+  // (phiếu giáo viên đã tự chọn mã đề thì giữ nguyên lựa chọn đó)
+  const keySig = keys.map((k) => `${k.id}:${k.ma_de}`).join('|')
+  useEffect(() => {
+    setQueue((q) => {
+      let changed = false
+      const out = q.map((it) => {
+        if (it.status !== 'review' || !it.read) return it
+        const stillValid = !!it.maDe && keys.some((k) => k.ma_de === it.maDe)
+        if (stillValid && (it.maDePicked || normMaDe(it.read.maDe) === normMaDe(it.maDe))) return it
+        const mm = matchMaDe(it.read.maDe, keys)
+        const flags = { ...it.flags }
+        delete flags['made']
+        if (mm.flag) flags['made'] = mm.flag
+        if (mm.maDe === it.maDe && flags['made'] === it.flags['made']) return it
+        changed = true
+        return { ...it, maDe: mm.maDe, maDePicked: false, flags, error: undefined }
+      })
+      return changed ? out : q
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [keySig])
+
+  // Các mã đề ghi trên phiếu (đang chờ rà) mà đợt chấm chưa có đáp án
+  const missingCodes = useMemo(() => {
+    const m = new Map<string, { code: string; n: number }>()
+    for (const it of queue) {
+      if (it.status !== 'review' || !it.read?.maDe) continue
+      const nk = normMaDe(it.read.maDe)
+      if (!nk || keys.some((k) => normMaDe(k.ma_de) === nk)) continue
+      const cur = m.get(nk)
+      if (cur) cur.n++
+      else m.set(nk, { code: it.read.maDe.trim(), n: 1 })
+    }
+    return [...m.values()].sort((a, b) => a.code.localeCompare(b.code, 'vi', { numeric: true }))
+  }, [queue, keys])
+
   const phach = cfg.identity === 'phach'
   const samePhach = (a: { maPhach: string; soPhach: string }, ma?: string | null, so?: string | null) =>
     normMaPhach(a.maPhach) === normMaPhach(ma) && normSoPhach(a.soPhach) === normSoPhach(so)
@@ -901,7 +993,12 @@ function GradeSection(props: {
   function readyToSave(it: QueueItem): string[] {
     const errs: string[] = []
     if (!it.answers) errs.push('Chưa đọc xong.')
-    if (!it.maDe || !keys.some((k) => k.ma_de === it.maDe)) errs.push('Chưa chọn mã đề có đáp án.')
+    if (!it.maDe || !keys.some((k) => k.ma_de === it.maDe))
+      errs.push(
+        it.read?.maDe && !keys.some((k) => normMaDe(k.ma_de) === normMaDe(it.read!.maDe))
+          ? `Chưa có đáp án mã đề ${it.read.maDe.trim()} — nhập đáp án ở tab 1 hoặc chọn mã đề khác.`
+          : 'Chưa chọn mã đề có đáp án.',
+      )
     if (phach) {
       if (!it.maPhach.trim() || !it.soPhach.trim()) errs.push('Chưa có mã phách / số phách.')
       const dupQ = queue.find((o) => o.uid !== it.uid && o.status === 'saved' && samePhach(o, it.maPhach, it.soPhach))
@@ -1080,6 +1177,20 @@ function GradeSection(props: {
           )}
         </div>
         {msg && <p style={{ whiteSpace: 'pre-line' }}>{msg}</p>}
+        {missingCodes.length > 0 && (
+          <div style={{ background: '#fffbeb', border: '1px solid #f59e0b', borderRadius: 8, padding: '8px 12px', marginTop: 10, fontSize: 13.5 }}>
+            <b>⚠ Chưa có đáp án cho mã đề ghi trên phiếu:</b>{' '}
+            {missingCodes.map((m) => `${m.code} (${m.n} phiếu)`).join(', ')}. Đợt chấm hiện chỉ có đáp án mã{' '}
+            {keys.map((k) => k.ma_de).join(', ')} nên các phiếu này <b>chưa được chấm</b>. Nhập đáp án xong, phiếu sẽ tự khớp đúng mã đề.
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginTop: 6 }}>
+              {missingCodes.map((m) => (
+                <button key={m.code} className="btn secondary" style={{ padding: '3px 10px', fontSize: 12 }} onClick={() => onNeedKey(m.code)}>
+                  + Nhập đáp án mã {m.code}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {queue.map((it, idx) => (
@@ -1093,6 +1204,7 @@ function GradeSection(props: {
           sheets={sheets}
           issues={it.status === 'review' ? readyToSave(it) : []}
           onPatch={(p) => update(it.uid, p)}
+          onNeedKey={onNeedKey}
           onSave={async () => {
             if (await saveItem(it)) await onSaved()
           }}
@@ -1115,12 +1227,18 @@ function QueueCard(props: {
   sheets: SheetRow[]
   issues: string[]
   onPatch: (p: Partial<QueueItem>) => void
+  onNeedKey: (maDe: string) => void
   onSave: () => void
   onRetry: () => void
   onRemove: () => void
 }) {
-  const { index, it, cfg, keys, roster, sheets, issues, onPatch, onSave, onRetry, onRemove } = props
+  const { index, it, cfg, keys, roster, sheets, issues, onPatch, onNeedKey, onSave, onRetry, onRemove } = props
   const key = keys.find((k) => k.ma_de === it.maDe)
+  const readCode = (it.read?.maDe || '').trim()
+  // mã ghi trên phiếu chưa có đáp án trong đợt chấm
+  const readNoKey = !!readCode && !keys.some((k) => normMaDe(k.ma_de) === normMaDe(readCode))
+  // giáo viên đang chấm theo mã khác với mã ghi trên phiếu
+  const differs = !!readCode && !!it.maDe && normMaDe(readCode) !== normMaDe(it.maDe)
   const sc = it.answers && key ? scorePaper(it.answers, key.answers, cfg) : null
   const saved = it.status === 'saved'
   const phach = cfg.identity === 'phach'
@@ -1271,27 +1389,53 @@ function QueueCard(props: {
                   {it.read?.stt && <p style={{ fontSize: 12, color: 'var(--muted)', margin: '2px 0 0' }}>Phiếu ghi STT: {it.read.stt}{it.read.classLabel ? ` · Lớp: ${it.read.classLabel}` : ''}</p>}
                 </div>
                 )}
-                <div style={{ width: 150 }}>
+                <div style={{ width: 210 }}>
                   <label>
-                    Mã đề {it.read?.maDe && <span style={{ color: 'var(--muted)', fontWeight: 400 }}>(ghi: {it.read.maDe})</span>}
+                    Mã đề chấm {readCode && <span style={{ color: 'var(--muted)', fontWeight: 400 }}>(phiếu ghi: {readCode})</span>}
                   </label>
                   <select
                     value={it.maDe}
                     disabled={saved}
-                    style={it.flags['made'] ? { background: '#fef3c7', borderColor: '#f59e0b' } : undefined}
+                    style={it.flags['made'] || (!it.maDe && !saved) ? { background: '#fef3c7', borderColor: '#f59e0b' } : undefined}
                     onChange={(e) => {
                       const flags = { ...it.flags }
                       delete flags['made']
-                      onPatch({ maDe: e.target.value, flags })
+                      onPatch({ maDe: e.target.value, maDePicked: !!e.target.value, flags, error: undefined })
                     }}
                   >
-                    <option value="">— Chọn —</option>
+                    <option value="">— Chọn mã đề —</option>
                     {keys.map((k) => (
                       <option key={k.id} value={k.ma_de}>
                         {k.ma_de}
+                        {readCode && normMaDe(k.ma_de) === normMaDe(readCode) ? ' ✓ khớp phiếu' : ''}
                       </option>
                     ))}
+                    {readNoKey && (
+                      <option value={`__nokey_${readCode}`} disabled>
+                        {readCode} — chưa có đáp án
+                      </option>
+                    )}
                   </select>
+                  {!saved && readNoKey && (
+                    <p style={{ color: '#b45309', fontSize: 12.5, margin: '2px 0 0' }}>
+                      Chưa có đáp án mã {readCode}.{' '}
+                      <a
+                        href="#"
+                        onClick={(e) => {
+                          e.preventDefault()
+                          onNeedKey(readCode)
+                        }}
+                      >
+                        + Nhập đáp án mã {readCode}
+                      </a>
+                      {it.maDe ? '' : ' — hoặc chọn mã đề đúng nếu máy đọc nhầm.'}
+                    </p>
+                  )}
+                  {differs && (
+                    <p style={{ color: '#b45309', fontSize: 12.5, margin: '2px 0 0' }}>
+                      Đang chấm theo mã <b>{it.maDe}</b> (cô chọn), khác mã ghi trên phiếu ({readCode}).
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -1303,6 +1447,11 @@ function QueueCard(props: {
                 answerKey={key?.answers}
                 onChange={saved ? undefined : (v) => onPatch({ answers: v, flags: clearChangedFlags(it.answers!, v, it.flags, cfg) })}
               />
+              {!it.maDe && !saved && (
+                <p style={{ color: '#b45309', fontSize: 13, margin: '6px 0 0' }}>
+                  Chưa tính điểm vì chưa có mã đề chấm — chọn mã đề ở ô "Mã đề chấm" phía trên.
+                </p>
+              )}
               {!saved && <FlagList flags={it.flags} onClear={() => onPatch({ flags: {} })} />}
               {it.read?.note && <p style={{ fontSize: 12.5, color: 'var(--muted)' }}>Ghi chú của AI: {it.read.note}</p>}
               {it.error && <p style={{ color: 'var(--danger)' }}>{it.error}</p>}
