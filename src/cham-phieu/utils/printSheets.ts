@@ -5,14 +5,19 @@
  * Phiếu nửa trang được xếp 2 phiếu trên một tờ A4 (có đường cắt). Bố cục lấy từ cùng hàm với lúc quét
  * (classLayout) nên phiếu in ra luôn khớp mẫu đọc.
  */
-import { classLayout, layoutToSvg } from './sheetTemplates'
-import type { ClassLayout } from './sheetTemplates'
+import { classLayout, layoutToSvg, p3IsGrid } from './sheetTemplates'
+import type { ClassLayout, ClassCounts } from './sheetTemplates'
 import type { PaperConfig } from './omr'
 
 const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;')
 
+/** Số câu + kiểu Phần III (lưới tô / viết tay) — cùng hàm dựng bố cục với lúc quét nên phiếu in luôn khớp mẫu đọc */
+function countsOf(cfg: PaperConfig): ClassCounts {
+  return { n1: cfg.n1, n2: cfg.n2, n3: cfg.n3, p3Mode: cfg.p3Mode }
+}
+
 function layoutOf(cfg: PaperConfig): ClassLayout {
-  return classLayout({ n1: cfg.n1, n2: cfg.n2, n3: cfg.n3 }, cfg.paper, cfg.bigBubbles)
+  return classLayout(countsOf(cfg), cfg.paper, cfg.bigBubbles)
 }
 
 /** Ruột SVG của một phiếu (bỏ thẻ <svg> ngoài) để ghép nhiều phiếu lên một trang */
@@ -56,14 +61,15 @@ export function openPrintSheets(cfg: PaperConfig, title: string) {
   const html = `<!doctype html><html lang="vi"><head><meta charset="utf-8"><title>Phiếu trả lời – ${esc(title)}</title>
 <style>
 @page { size: A4 portrait; margin: 0 }
-html, body { margin: 0; padding: 0; background: #6b7280 }
+html, body { margin: 0; padding: 0; background: #6b7280; -webkit-print-color-adjust: exact; print-color-adjust: exact }
 .page { width: 210mm; height: 297mm; background: #fff; margin: 8mm auto; overflow: hidden; box-shadow: 0 6px 24px rgba(0,0,0,.25) }
 .page svg { display: block; width: 210mm; height: 297mm }
 .note { width: 210mm; max-width: calc(100% - 16px); margin: 8mm auto 0; font: 14px/1.55 system-ui, sans-serif; color: #fff }
 @media print { html, body { background: #fff } .page { margin: 0; box-shadow: none; page-break-after: always } .note { display: none } }
 </style></head><body>
 <div class="note"><b>Khi in:</b> khổ giấy A4, tỉ lệ 100% (Actual size / Không co giãn), lề = Không. Có thể chọn máy in "Lưu dưới dạng PDF" để giữ file và photo.
-${l.size === 'A5' ? 'Mỗi tờ A4 có 2 phiếu — cắt theo đường kẻ ✂.' : ''} Giữ nguyên các ô vuông đen ở góc phiếu (máy dùng để định vị khi quét).</div>
+${l.size === 'A5' ? 'Mỗi tờ A4 có 2 phiếu — cắt theo đường kẻ ✂.' : ''} Giữ nguyên các ô vuông đen ở góc${p3IsGrid(countsOf(cfg)) ? ' và ở hai mép giấy ngang Phần III' : ''} (máy dùng để định vị khi quét).
+${p3IsGrid(countsOf(cfg)) ? '<br><b>Phần III:</b> học sinh tô kín ô bằng bút chì 2B hoặc bút mực đen, mỗi cột tô đúng một ô (dấu −, dấu phẩy hoặc chữ số), ghép từ trái sang phải; ô vuông trên cùng chỉ để ghi nháp, máy không đọc.' : ''}</div>
 <div class="page">${page}</div>
 <script>window.onload = () => setTimeout(() => window.print(), 300)</script>
 </body></html>`

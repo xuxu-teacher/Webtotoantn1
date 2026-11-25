@@ -72,13 +72,76 @@ export interface ClassCounts {
   n1: number
   n2: number
   n3: number
+  /**
+   * Kiểu Phần III: 'bubble' = lưới tô ô chuẩn Bộ GD&ĐT (4 cột/câu: dấu −, dấu phẩy, chữ số 0–9) — máy đọc bằng xử lý ảnh;
+   * 'write' / không có = ô viết tay (đợt chấm cũ, AI đọc chữ viết).
+   */
+  p3Mode?: 'bubble' | 'write'
+}
+
+/** Phiếu lớp có Phần III dạng lưới tô ô? */
+export function p3IsGrid(c: ClassCounts): boolean {
+  return c.p3Mode === 'bubble' && c.n3 > 0
+}
+
+// ---------------- LƯỚI TÔ PHẦN III (chuẩn phiếu Bộ GD&ĐT) ----------------
+
+/** Số câu Phần III tối đa của phiếu lưới tô (2 hàng × 6 câu trên 1 trang A4) */
+export const P3_GRID_MAX = 12
+/** Ký tự của 12 hàng (từ trên xuống): dấu trừ, dấu phẩy, chữ số 0..9 */
+export const P3_ROW_CHARS = ['-', ',', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9']
+/** Ký tự có ô tô ở từng cột: cột 1 có dấu −, cột 2 và 3 có dấu phẩy, cột 4 chỉ có chữ số */
+export const P3_COL_CHARS: string[][] = [
+  ['-', ...P3_ROW_CHARS.slice(2)],
+  [',', ...P3_ROW_CHARS.slice(2)],
+  [',', ...P3_ROW_CHARS.slice(2)],
+  [...P3_ROW_CHARS.slice(2)],
+]
+
+/** Chuẩn hoá đáp số để tô/so: bỏ khoảng trắng, dấu chấm thập phân -> dấu phẩy, các kiểu gạch ngang -> "-" */
+export function p3Canon(s: string): string {
+  return (s || '').replace(/[−–—]/g, '-').replace(/\s+/g, '').replace(/\./g, ',')
+}
+
+/**
+ * Vị trí cột (0..3) của từng ký tự khi tô đáp số s lên lưới 4 cột (ghép từ trái sang, cột chưa dùng có thể để không).
+ * Gán tham lam vào cột hợp lệ sớm nhất -> tìm được cách tô nếu có. Không tô được -> null.
+ */
+export function p3Placement(s: string): number[] | null {
+  const t = p3Canon(s)
+  if (!t || t.length > 4) return null
+  const out: number[] = []
+  let col = 0
+  for (const ch of t) {
+    while (col < 4 && !P3_COL_CHARS[col].includes(ch)) col++
+    if (col >= 4) return null
+    out.push(col++)
+  }
+  return out
+}
+
+/** Đáp số có tô được trên lưới Phần III không (số nguyên / thập phân, tối đa 4 ký tự, đúng cột dấu) */
+export function p3Fillable(s: string): boolean {
+  const t = p3Canon(s)
+  return /^-?\d+(,\d+)?$/.test(t) && p3Placement(t) !== null
 }
 
 /** Phần tử vẽ của phiếu lớp (để xuất SVG in ra giấy) */
 export type Draw =
   | { t: 'rect'; x: number; y: number; w: number; h: number; fill?: boolean; sw?: number; r?: number }
-  | { t: 'circle'; x: number; y: number; r: number }
-  | { t: 'text'; x: number; y: number; s: string; size: number; bold?: boolean; anchor?: 'start' | 'middle' | 'end' }
+  | { t: 'circle'; x: number; y: number; r: number; sw?: number }
+  | {
+      t: 'text'
+      x: number
+      y: number
+      s: string
+      size: number
+      bold?: boolean
+      anchor?: 'start' | 'middle' | 'end'
+      /** màu chữ (mặc định đen) — chữ số trong ô Phần III in xám nhạt */
+      fill?: string
+      sans?: boolean
+    }
   | { t: 'line'; x1: number; y1: number; x2: number; y2: number; sw?: number; dash?: boolean }
 
 /**
@@ -100,6 +163,12 @@ export interface ClassLayout {
 const PAGE_W = 210
 const M = 9 // lề tới tâm mốc
 const MK = 5 // cạnh mốc
+
+/**
+ * Hệ số phóng lưới Phần III theo kiểu bố cục (số đo gốc r = 2,0 / bước hàng 4,8 / bước cột 5,6 mm).
+ * Kiểu ô lớn (big, xl) vẫn giữ lưới gốc: phóng to thì 1 hàng không còn đủ 6 câu -> lưới phải xuống 2 hàng, không vừa trang.
+ */
+const P3K: Record<ClassStyle, number> = { std: 1, big: 1, xl: 1, compact: 0.9 }
 
 interface Dims {
   BR: number // bán kính ô tô
@@ -143,6 +212,11 @@ function p1Columns(n1: number): number[][] {
 /** Phiếu (bố cục chuẩn) có vừa nửa trang A4 (in 2 phiếu/tờ) không */
 export function fitsHalfA4(c: ClassCounts): boolean {
   return buildClassLayout(c, 'A5', 'std').contentBottom <= bottomLimit(148.5)
+}
+
+/** Phiếu có vừa 1 trang A4 không (kể cả bố cục gọn) — đề quá dài thì không in được */
+export function fitsA4(c: ClassCounts): boolean {
+  return buildClassLayout(c, 'A4', 'compact').contentBottom <= bottomLimit(297)
 }
 
 /** Tự chọn khổ (đợt chấm cũ chưa lưu khổ): vừa nửa trang thì in 2 phiếu/tờ */
@@ -198,8 +272,12 @@ function buildClassLayout(c: ClassCounts, size: PaperSize, style: ClassStyle): C
   for (const p of [...corners, ...extra]) draws.push({ t: 'rect', x: p.x - MK / 2, y: p.y - MK / 2, w: MK, h: MK, fill: true })
 
   // Mã cấu trúc 16 bit: n1 (6 bit) | n2 (4 bit) | n3 (5 bit) | bit chẵn lẻ
+  // Phần III lưới tô: trường n3 = số câu + 16 (bit 4 bật) -> phiếu lưới tô và phiếu viết tay cùng số câu có mã KHÁC nhau,
+  // quét nhầm loại phiếu sẽ bị phát hiện ngay.
+  const grid = p3IsGrid(c)
+  const n3Code = grid ? (c.n3 & 15) | 16 : c.n3 & 31
   const CODE_SZ = 3
-  const raw = (c.n1 & 63) | ((c.n2 & 15) << 6) | ((c.n3 & 31) << 10)
+  const raw = (c.n1 & 63) | ((c.n2 & 15) << 6) | (n3Code << 10)
   let par = 0
   for (let k = 0; k < 15; k++) par ^= (raw >> k) & 1
   const codeValue = raw | (par << 15)
@@ -320,8 +398,86 @@ function buildClassLayout(c: ClassCounts, size: PaperSize, style: ClassStyle): C
     }
   }
 
-  // PHẦN III (viết tay)
-  if (c.n3) {
+  // PHẦN III
+  if (c.n3 && grid) {
+    // ---- LƯỚI TÔ Ô chuẩn Bộ GD&ĐT (số đo kiểu 'std', các kiểu khác nhân hệ số P3K) ----
+    //  Mỗi câu 1 khối rộng BW: cột nhãn (− , 0..9) + 4 cột tô, bước cột CX; 12 hàng bước RY; ô tròn bán kính BR3.
+    //  Gốc khối (bx, yT): "Câu k" | ô ghi nháp yT+4,4 → yT+9,4 | tâm hàng 0 (dấu −) yT+13,0 | tâm hàng 11 (số 9) yT+65,8 | đáy yT+69,2
+    const k = P3K[style]
+    const BR3 = 2.0 * k
+    const CX = 5.6 * k
+    const RY = 4.8 * k
+    const LBLW = 4.5 * k
+    const BW = LBLW + 4 * CX + 1.5 * k
+    const GAP = 1.6 * k
+    const DRAFT_Y = 4.4 * k
+    const DRAFT_H = 5 * k
+    const ROW0 = DRAFT_Y + DRAFT_H + 1.2 * k + RY / 2
+    const BH = ROW0 + 11 * RY + BR3 + 1.4 * k
+    draws.push({
+      t: 'text',
+      x: L,
+      y: y + 2 * fs,
+      s: 'PHẦN III. Mỗi cột tô đúng một ô (dấu −, dấu phẩy hoặc chữ số); ô vuông trên cùng chỉ để ghi nháp',
+      size: 3.1 * fs,
+      bold: true,
+    })
+    y += 5 * fs
+    const perRow = Math.max(1, Math.min(6, Math.floor((fullW + GAP) / (BW + GAP))))
+    const gridTop = y
+    for (let b = 0; b * perRow < c.n3; b++) {
+      const yT = y
+      for (let kk = 0; kk < perRow && b * perRow + kk < c.n3; kk++) {
+        const q = b * perRow + kk + 1
+        const bx = L + kk * (BW + GAP)
+        draws.push({ t: 'rect', x: bx, y: yT, w: BW, h: BH, sw: 0.35 })
+        draws.push({ t: 'text', x: bx + 1.2 * k, y: yT + 3.3 * k, s: `Câu ${q}`, size: 2.9 * k, bold: true })
+        const colX = (j: number) => bx + LBLW + CX / 2 + j * CX
+        const rowY = (r: number) => yT + ROW0 + r * RY
+        // ô ghi nháp (không đọc)
+        for (let j = 0; j < 4; j++) draws.push({ t: 'rect', x: colX(j) - (CX - 1 * k) / 2, y: yT + DRAFT_Y, w: CX - 1 * k, h: DRAFT_H, sw: 0.3 })
+        // nhãn hàng bên trái + vạch ngăn giữa hàng dấu và hàng chữ số
+        P3_ROW_CHARS.forEach((ch, r) =>
+          draws.push({ t: 'text', x: bx + LBLW * 0.5, y: rowY(r) + 0.95 * k, s: ch === '-' ? '−' : ch, size: 2.7 * k, bold: true, anchor: 'middle' }),
+        )
+        const sepY = rowY(1) + RY / 2
+        draws.push({ t: 'line', x1: bx + 0.8 * k, y1: sepY, x2: bx + BW - 0.8 * k, y2: sepY, sw: 0.2 })
+        // ô tô: viền đen đậm, ký tự in xám nhạt bên trong (giống phiếu Bộ)
+        for (let j = 0; j < 4; j++) {
+          const chars = P3_COL_CHARS[j]
+          const opts: Pt[] = chars.map((ch) => ({ x: colX(j), y: rowY(P3_ROW_CHARS.indexOf(ch)) }))
+          opts.forEach((o, i) => {
+            draws.push({ t: 'circle', x: o.x, y: o.y, r: BR3, sw: 0.4 })
+            const ch = chars[i]
+            draws.push({
+              t: 'text',
+              x: o.x,
+              y: o.y + (ch === ',' ? 0.35 : ch === '-' ? 0.75 : 0.78) * k,
+              s: ch === '-' ? '−' : ch,
+              size: (ch === ',' ? 3.2 : 2.2) * k,
+              anchor: 'middle',
+              fill: '#a6a6a6',
+              sans: true,
+            })
+          })
+          rows.push({ part: 3, q, col: j, chars, block: `p3q${q}`, r: BR3, opts })
+        }
+        p3Boxes.push({ q, x: bx, y: yT, w: BW, h: BH })
+      }
+      y += BH + 2
+    }
+    // 2 mốc ■ phụ ở mép trái/phải, ngang tâm lưới Phần III: bám vị trí chắc hơn ở nửa dưới tờ giấy
+    const yMid = (gridTop + y - 2) / 2
+    for (const p of [
+      { x: M, y: yMid },
+      { x: W - M, y: yMid },
+    ]) {
+      extra.push(p)
+      draws.push({ t: 'rect', x: p.x - MK / 2, y: p.y - MK / 2, w: MK, h: MK, fill: true })
+    }
+    y += 2
+  } else if (c.n3) {
+    // ---- Ô VIẾT TAY (đợt chấm cũ — giữ nguyên để phiếu đã in vẫn quét được) ----
     draws.push({ t: 'text', x: L, y: y + 2 * fs, s: 'PHẦN III. Ghi đáp số vào ô (số nguyên hoặc số thập phân, dùng dấu phẩy)', size: 3.3 * fs, bold: true })
     y += 5 * fs
     const perRow = 8
@@ -353,7 +509,11 @@ function buildClassLayout(c: ClassCounts, size: PaperSize, style: ClassStyle): C
         let p = 0
         for (let k = 0; k < 15; k++) p ^= (r >> k) & 1
         if (p !== (v >> 15)) return 'mẫu phiếu khác (không đọc được mã cấu trúc)'
-        return `đề ${r & 63}–${(r >> 6) & 15}–${(r >> 10) & 31} câu`
+        const n3c = (r >> 10) & 31
+        // n3 ≥ 16: Phần III lưới tô (phiếu viết tay cũ chỉ tới 20 câu Phần III nên rất hiếm khi trùng)
+        return n3c >= 16
+          ? `đề ${r & 63}–${(r >> 6) & 15}–${n3c & 15} câu (Phần III tô ô)`
+          : `đề ${r & 63}–${(r >> 6) & 15}–${n3c} câu${n3c ? ' (Phần III viết tay)' : ''}`
       },
     },
     markerSize: MK,
@@ -361,6 +521,7 @@ function buildClassLayout(c: ClassCounts, size: PaperSize, style: ClassStyle): C
     rows,
     crops,
     p3Boxes,
+    p3Grid: grid,
     frame: { x: 0, y: 0, w: W, h: Hh },
   }
   return { size, style, width: W, height: Hh, template, draws, contentBottom: y }
@@ -369,8 +530,9 @@ function buildClassLayout(c: ClassCounts, size: PaperSize, style: ClassStyle): C
 /** Mô tả khổ phiếu để hiện cho giáo viên */
 export function describeClassPaper(c: ClassCounts, paper?: PaperSize, big?: boolean): string {
   const r = resolveClassPaper(c, paper, big)
+  const g = p3IsGrid(c) ? ' · Phần III tô ô' : ''
   if (r.size === 'A5') return 'Nửa trang A4 (2 phiếu/tờ, cắt đôi)'
-  return r.style === 'xl' || r.style === 'big' ? '1 trang A4 – ô tô lớn' : r.style === 'compact' ? '1 trang A4 – bố cục gọn (đề dài)' : '1 trang A4'
+  return (r.style === 'xl' || r.style === 'big' ? '1 trang A4 – ô tô lớn' : r.style === 'compact' ? '1 trang A4 – bố cục gọn (đề dài)' : '1 trang A4') + g
 }
 
 /** SVG một phiếu (đơn vị mm) */
@@ -382,12 +544,12 @@ export function layoutToSvg(l: ClassLayout, title = ''): string {
       parts.push(
         `<rect x="${d.x}" y="${d.y}" width="${d.w}" height="${d.h}" ${d.fill ? 'fill="#000"' : `fill="none" stroke="#000" stroke-width="${d.sw ?? 0.3}"`}/>`,
       )
-    else if (d.t === 'circle') parts.push(`<circle cx="${d.x}" cy="${d.y}" r="${d.r}" fill="none" stroke="#000" stroke-width="0.32"/>`)
+    else if (d.t === 'circle') parts.push(`<circle cx="${d.x}" cy="${d.y}" r="${d.r}" fill="none" stroke="#000" stroke-width="${d.sw ?? 0.32}"/>`)
     else if (d.t === 'line')
       parts.push(`<line x1="${d.x1}" y1="${d.y1}" x2="${d.x2}" y2="${d.y2}" stroke="#000" stroke-width="${d.sw ?? 0.3}"${d.dash ? ' stroke-dasharray="1 1"' : ''}/>`)
     else
       parts.push(
-        `<text x="${d.x}" y="${d.y}" font-size="${d.size}" font-family="Times New Roman, serif"${d.bold ? ' font-weight="bold"' : ''}${d.anchor ? ` text-anchor="${d.anchor}"` : ''}>${esc(d.s)}</text>`,
+        `<text x="${d.x}" y="${d.y}" font-size="${d.size}" font-family="${d.sans ? 'Arial, Helvetica, sans-serif' : 'Times New Roman, serif'}"${d.bold ? ' font-weight="bold"' : ''}${d.anchor ? ` text-anchor="${d.anchor}"` : ''}${d.fill ? ` fill="${d.fill}"` : ''}>${esc(d.s)}</text>`,
       )
   }
   if (title)

@@ -21,6 +21,8 @@ import {
   filesToImages,
   fitAnswers,
   invalidShortKeys,
+  unfillableP3Keys,
+  p3Bubble,
   isBubbleSheet,
   keyIsComplete,
   KeyTableItem,
@@ -44,7 +46,7 @@ import {
   tfLabel,
 } from '../utils/omr'
 import { downloadSheetPdf, openPrintSheets } from '../utils/printSheets'
-import { GRID35_LIMITS, SCHOOL_LIMITS, describeClassPaper, fitsHalfA4 } from '../utils/sheetTemplates'
+import { GRID35_LIMITS, P3_GRID_MAX, SCHOOL_LIMITS, describeClassPaper, fitsA4, fitsHalfA4 } from '../utils/sheetTemplates'
 import { renderGradedOverlay } from '../utils/overlay'
 import GradedImage from '../components/GradedImage'
 import ResultSummary from '../components/ResultSummary'
@@ -439,10 +441,14 @@ export default function TeacherPaperGradingDetail() {
           ? `Phiếu của trường chỉ có ${L.n1} – ${L.n2} – ${L.n3} câu, đợt chấm này có ${cfg.n1} – ${cfg.n2} – ${cfg.n3} câu.`
           : `Phiếu 35 câu chỉ có ${L.n1} câu trắc nghiệm A–D (không có Phần 2, Phần 3), đợt chấm này có ${cfg.n1} – ${cfg.n2} – ${cfg.n3} câu.`,
       )
+    if (to === 'class' && cfg.n3 > P3_GRID_MAX) return alert(`Phiếu web tạo: Phần III (lưới tô ô) tối đa ${P3_GRID_MAX} câu, đợt chấm này có ${cfg.n3} câu.`)
+    // đổi sang phiếu web tạo: phiếu sẽ in mới nên dùng Phần III lưới tô
+    const asClass: PaperConfig = { ...cfg, p3Mode: 'bubble' }
+    if (to === 'class' && !fitsA4(asClass)) return alert('Đề quá dài, phiếu không vừa 1 trang A4.')
     const next: PaperConfig =
       to === 'class'
-        ? { ...cfg, sheet: 'class', identity: 'name', paper: fitsHalfA4(cfg) ? 'A5' : 'A4', bigBubbles: !fitsHalfA4(cfg), parts: undefined }
-        : { ...cfg, sheet: to, identity: 'phach', paper: undefined, bigBubbles: undefined, parts: to === 'school' ? cfg.parts || 'all' : undefined }
+        ? { ...asClass, sheet: 'class', identity: 'name', paper: fitsHalfA4(asClass) ? 'A5' : 'A4', bigBubbles: !fitsHalfA4(asClass), parts: undefined }
+        : { ...cfg, sheet: to, identity: 'phach', paper: undefined, bigBubbles: undefined, parts: to === 'school' ? cfg.parts || 'all' : undefined, p3Mode: undefined }
     await saveConfig(next)
   }
 
@@ -451,7 +457,8 @@ export default function TeacherPaperGradingDetail() {
     if (!cfg || cfg.sheet !== 'class') return
     const cur = cfg.paper === 'A5' ? 'A5' : 'A4'
     if (p === cur) return
-    if (p === 'A5' && !fitsHalfA4(cfg)) return alert('Đề này quá dài, không vừa nửa trang A4.')
+    if (p === 'A5' && !fitsHalfA4(cfg))
+      return alert(p3Bubble(cfg) ? 'Phần III lưới tô cần 1 trang A4 — nửa trang chỉ dùng khi đề không có Phần III.' : 'Đề này quá dài, không vừa nửa trang A4.')
     if (!confirm('Đổi khổ phiếu? Phiếu đã in theo khổ cũ sẽ KHÔNG quét được với khổ mới — chỉ đổi khi cô chưa in phiếu hoặc sẽ in lại.')) return
     await saveConfig({ ...cfg, paper: p, bigBubbles: p === 'A4' })
   }
@@ -517,8 +524,8 @@ export default function TeacherPaperGradingDetail() {
               </span>
             )}
             {cfg.n3 > 0 ? (
-              <span className="badge gray">
-                P3: {cfg.n3} × {cfg.p3}đ
+              <span className={`badge gray ${p3Bubble(cfg) ? 'p3grid' : ''}`}>
+                P3: {cfg.n3} × {cfg.p3}đ{cfg.sheet === 'class' ? (p3Bubble(cfg) ? ' · tô ô' : ' · viết tay') : ''}
               </span>
             ) : (
               cfg.sheet !== 'grid35' && <span className="badge warn">Phần III: không chấm</span>
@@ -878,6 +885,15 @@ function KeySection(props: {
     if (bad.length) errs.push(`Đáp án Phần 3 không phải số: ${bad.join(', ')}.`)
     if (Object.keys(draft.flags).length) errs.push('Còn ô tô vàng chưa rà — kiểm tra rồi bấm "Đã rà xong các ô vàng".')
     if (errs.length) return setDraft({ ...draft, error: errs.join('\n') })
+    // Phần III lưới tô: đáp án mà học sinh không tô được trên lưới 4 cột (quá 4 ký tự, dấu phẩy sai cột…) -> không ai chấm đúng được
+    const unfill = unfillableP3Keys(draft.answers, cfg)
+    if (
+      unfill.length &&
+      !confirm(
+        `Đáp án ${unfill.join(', ')} không tô được trên lưới Phần III (tối đa 4 ký tự; dấu − ở cột 1, dấu phẩy ở cột 2 hoặc 3) nên học sinh sẽ không thể làm đúng. Vẫn lưu?`,
+      )
+    )
+      return
 
     setSaving(true)
     const payload = { batch_id: batchId, teacher_id: teacherId, ma_de: maDe, answers: draft.answers }

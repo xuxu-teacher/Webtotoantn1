@@ -5,10 +5,13 @@
  *  - Bỏ trống: chỉ khoanh nét đứt đỏ ô đáp án đúng + dấu ✗.
  *  - Hàng máy chưa chắc (ô vàng chưa rà): vòng CAM quanh cả hàng.
  *  - Chưa có đáp án (chưa chọn mã đề): vòng XANH DƯƠNG = ô máy đọc được.
+ *  - Phần III lưới tô: câu đúng -> vòng xanh quanh mọi ô học sinh tô; câu sai -> vòng đỏ quanh ô học sinh tô,
+ *    vòng đỏ nét đứt ở ô của đáp án đúng (cột học sinh tô sai), nhãn "ĐA: …" ngay trên khối câu.
  * Vẽ theo bài làm HIỆN TẠI (kể cả ô giáo viên đã sửa tay), nên luôn khớp với bảng kết quả.
  */
 import type { CellId, OverlayGeo, PaperAnswers, PaperConfig } from './omr'
 import { paperShortEqual } from './omr'
+import { p3Canon, p3Placement } from './sheetTemplates'
 
 export const MARK = {
   ok: '#16a34a',
@@ -74,6 +77,7 @@ export function drawGrades(
   cfg: PaperConfig,
 ) {
   for (const row of geo.rows) {
+    if (row.part === 3) continue // Phần III lưới tô vẽ riêng bên dưới
     const R = row.r
     const lw = Math.max(2, R * 0.28)
     const stu = rowIndex(row.id, answers)
@@ -94,6 +98,10 @@ export function drawGrades(
       if (k >= 0 && row.centers[k]) ring(ctx, row.centers[k].x, row.centers[k].y, R * 1.3, MARK.bad, lw, true)
       tick(ctx, right, cy, R * 1.5, false)
     }
+  }
+  if (geo.p3Mode === 'grid') {
+    drawP3Grid(ctx, geo, answers, key, flags, cfg)
+    return
   }
   // Phần III (phiếu lớp có ô ghi đáp số)
   if (key && cfg.n3 > 0)
@@ -117,6 +125,86 @@ export function drawGrades(
       }
       ctx.restore()
     }
+}
+
+/** Nhãn chữ trên nền trắng (để đọc rõ trên ảnh chụp) */
+function label(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, size: number, color: string, align: 'left' | 'right') {
+  ctx.save()
+  ctx.font = `bold ${Math.round(size)}px system-ui, sans-serif`
+  ctx.textBaseline = 'middle'
+  const w = ctx.measureText(text).width
+  const pad = size * 0.25
+  const x0 = align === 'right' ? x - w - pad * 2 : x
+  ctx.fillStyle = 'rgba(255,255,255,0.92)'
+  ctx.fillRect(x0, y - size * 0.62, w + pad * 2, size * 1.24)
+  ctx.strokeStyle = color
+  ctx.lineWidth = Math.max(1, size * 0.08)
+  ctx.strokeRect(x0, y - size * 0.62, w + pad * 2, size * 1.24)
+  ctx.fillStyle = color
+  ctx.fillText(text, x0 + pad, y)
+  ctx.restore()
+}
+
+/** Phần III lưới tô (phiếu lớp mới): đánh dấu theo từng câu trên chính các ô tô */
+function drawP3Grid(
+  ctx: CanvasRenderingContext2D,
+  geo: OverlayGeo,
+  answers: PaperAnswers,
+  key: PaperAnswers | undefined,
+  flags: Record<CellId, string>,
+  cfg: PaperConfig,
+) {
+  for (const b of geo.p3) {
+    if (b.q > cfg.n3) continue
+    const id = `3.${b.q}`
+    const cols = geo.rows.filter((r) => r.part === 3 && r.id === id).sort((x, y) => (x.col ?? 0) - (y.col ?? 0))
+    if (!cols.length) continue
+    const R = cols[0].r
+    const lw = Math.max(2, R * 0.28)
+    const a = answers.p3[b.q - 1] || ''
+    // các ô máy đọc chỉ còn đúng khi giáo viên CHƯA sửa tay đáp số của câu này
+    const machine = (geo.p3Read?.[b.q - 1] || '') === a
+    const marked = machine ? cols.flatMap((c) => (c.marks || []).map((i) => ({ c, i }))) : []
+    const lblSize = Math.max(12, R * 1.5)
+    if (flags[id]) {
+      ctx.save()
+      ctx.strokeStyle = MARK.warn
+      ctx.lineWidth = lw
+      ctx.strokeRect(b.x - lw, b.y - lw, b.w + 2 * lw, b.h + 2 * lw)
+      ctx.restore()
+    }
+    if (!key) {
+      for (const m of marked) ring(ctx, m.c.centers[m.i].x, m.c.centers[m.i].y, R * 1.3, MARK.read, lw)
+      if (!machine && a) label(ctx, a, b.x + b.w - 2, b.y + lblSize * 0.8, lblSize, MARK.read, 'right')
+      continue
+    }
+    const kv = key.p3[b.q - 1] || ''
+    const ok = !!a && paperShortEqual(a, kv)
+    const color = ok ? MARK.ok : MARK.bad
+    for (const m of marked) ring(ctx, m.c.centers[m.i].x, m.c.centers[m.i].y, R * 1.3, color, lw)
+    ctx.save()
+    ctx.strokeStyle = color
+    ctx.lineWidth = lw
+    ctx.strokeRect(b.x - lw * 0.5, b.y - lw * 0.5, b.w + lw, b.h + lw)
+    ctx.restore()
+    tick(ctx, b.x + b.w - R * 1.4, b.y + b.h - R * 1.4, R * 1.8, ok)
+    if (ok || !kv) continue
+    // ô của đáp án đúng: đặt các ký tự đáp án vào đúng các cột học sinh đã dùng (nếu cùng số ký tự), không thì từ cột 1
+    const kc = p3Canon(kv)
+    let place = p3Placement(kc)
+    const used = machine ? cols.filter((c) => c.chosen !== null && c.chosen !== undefined).map((c) => c.col ?? 0) : []
+    if (place && used.length === kc.length && [...kc].every((ch, i) => cols[used[i]]?.chars?.includes(ch))) place = used
+    if (place)
+      [...kc].forEach((ch, i) => {
+        const c = cols.find((cc) => (cc.col ?? 0) === place![i])
+        const j = c?.chars?.indexOf(ch) ?? -1
+        if (!c || j < 0) return
+        if (machine && c.chosen === j) return // cột này học sinh tô đúng ký tự
+        ring(ctx, c.centers[j].x, c.centers[j].y, R * 1.3, MARK.bad, lw, true)
+      })
+    label(ctx, `ĐA: ${kc.replace(/-/g, '−')}`, b.x + b.w - 2, b.y + lblSize * 0.8, lblSize, MARK.bad, 'right')
+    if (!machine && a) label(ctx, `HS: ${a}`, b.x + 2, b.y + lblSize * 2.1, lblSize * 0.9, MARK.bad, 'left')
+  }
 }
 
 const imgCache = new Map<string, Promise<HTMLImageElement>>()

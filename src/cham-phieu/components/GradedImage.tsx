@@ -54,7 +54,7 @@ function useDraw(
   return ready
 }
 
-export function MarkLegend({ hasKey }: { hasKey: boolean }) {
+export function MarkLegend({ hasKey, p3Grid }: { hasKey: boolean; p3Grid?: boolean }) {
   return (
     <div className="mark-legend">
       {hasKey ? (
@@ -77,6 +77,7 @@ export function MarkLegend({ hasKey }: { hasKey: boolean }) {
       <span>
         <i className="dot warn" /> Cần rà
       </span>
+      {p3Grid && hasKey && <span className="p3-legend">Phần III: nhãn “ĐA” = đáp án đúng của câu sai</span>}
     </div>
   )
 }
@@ -97,7 +98,7 @@ export default function GradedImage(props: Props) {
         {(!hasLayer || !ready) && <img src={fallback} alt={alt} />}
         <span className="zoom-hint">🔍 Phóng to</span>
       </button>
-      {hasLayer && <MarkLegend hasKey={!!answerKey} />}
+      {hasLayer && <MarkLegend hasKey={!!answerKey} p3Grid={geo?.p3Mode === 'grid'} />}
       {open && <ImageViewer {...props} onClose={() => setOpen(false)} originalSrc={original || fallback} />}
     </div>
   )
@@ -176,7 +177,7 @@ function ImageViewer(props: Props & { onClose: () => void; originalSrc: string }
       </div>
       {hasLayer && mode === 'marked' && (
         <div className="viewer-legend" onClick={(e) => e.stopPropagation()}>
-          <MarkLegend hasKey={!!answerKey} />
+          <MarkLegend hasKey={!!answerKey} p3Grid={geo?.p3Mode === 'grid'} />
         </div>
       )}
     </div>

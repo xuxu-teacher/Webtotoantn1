@@ -366,3 +366,12 @@
   .pg table.list th { padding: 8px 6px; }
   .pg .hide-sm { display: none !important; }
 }
+
+/* ---------- Phần III lưới tô (phiếu lớp mới) ---------- */
+/* Xem trước phiếu: SVG giữ đúng màu in (viền ô đen đậm, chữ số trong ô xám nhạt) */
+.pg .sheet-preview .paper svg { -webkit-print-color-adjust: exact; print-color-adjust: exact; shape-rendering: geometricPrecision; text-rendering: geometricPrecision; }
+.pg .sheet-preview .paper.a4 { max-width: 420px; }
+.pg .p3-note { margin: 8px 0 0; padding: 8px 12px; border-radius: 10px; background: var(--primary-light); color: var(--primary-dark); font-size: 12.5px; line-height: 1.5; }
+.pg .p3-note b { color: var(--primary-dark); }
+.pg .mark-legend .p3-legend { color: var(--danger); font-weight: 600; }
+.pg .badge.p3grid { background: #e6f7ee; color: #146c43; }

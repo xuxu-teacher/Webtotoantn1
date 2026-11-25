@@ -3,7 +3,7 @@ import { Link, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../auth'
 import { DEFAULT_CONFIG, PaperConfig, SheetKind } from '../utils/omr'
-import { GRID35_LIMITS, SCHOOL_LIMITS, describeClassPaper, fitsHalfA4 } from '../utils/sheetTemplates'
+import { GRID35_LIMITS, P3_GRID_MAX, SCHOOL_LIMITS, describeClassPaper, fitsA4, fitsHalfA4 } from '../utils/sheetTemplates'
 import { downloadSheetPdf, openPrintSheets, sheetPreviewSvg } from '../utils/printSheets'
 
 interface BatchRow {
@@ -42,11 +42,14 @@ const sheetLabel = (c: PaperConfig) =>
 function finalConfig(cfg: PaperConfig): PaperConfig {
   if (cfg.sheet === 'school') {
     const p12 = cfg.parts === 'p12'
-    return { ...cfg, identity: 'phach', paper: undefined, bigBubbles: undefined, parts: p12 ? 'p12' : 'all', n3: p12 ? 0 : cfg.n3 }
+    // phiếu trường in sẵn: Phần III vẫn là dòng viết tay (AI đọc) — không dùng lưới tô
+    return { ...cfg, identity: 'phach', paper: undefined, bigBubbles: undefined, parts: p12 ? 'p12' : 'all', n3: p12 ? 0 : cfg.n3, p3Mode: undefined }
   }
-  if (cfg.sheet === 'grid35') return { ...cfg, identity: 'phach', paper: undefined, bigBubbles: undefined, parts: undefined }
-  const half = cfg.paper === 'A5' && fitsHalfA4(cfg)
-  return { ...cfg, sheet: 'class', identity: 'name', paper: half ? 'A5' : 'A4', bigBubbles: !half, parts: undefined }
+  if (cfg.sheet === 'grid35') return { ...cfg, identity: 'phach', paper: undefined, bigBubbles: undefined, parts: undefined, p3Mode: undefined }
+  // phiếu lớp do web tạo (đợt chấm mới): Phần III luôn là lưới tô ô chuẩn Bộ GD&ĐT
+  const c: PaperConfig = { ...cfg, p3Mode: 'bubble' }
+  const half = c.paper === 'A5' && fitsHalfA4(c)
+  return { ...c, sheet: 'class', identity: 'name', paper: half ? 'A5' : 'A4', bigBubbles: !half, parts: undefined }
 }
 
 /** Danh sách đợt chấm phiếu giấy + tạo đợt mới */
@@ -97,12 +100,13 @@ export default function TeacherPaperGrading() {
   const fin = useMemo(() => finalConfig(cfg), [cfg])
   const p12 = cfg.sheet === 'school' && cfg.parts === 'p12'
   const max = fin.n1 * fin.p1 + fin.n2 * fin.p2 + fin.n3 * fin.p3
-  const counts = { n1: fin.n1, n2: fin.n2, n3: fin.n3 }
+  const counts = { n1: fin.n1, n2: fin.n2, n3: fin.n3, p3Mode: fin.p3Mode }
+  const p3Grid = cfg.sheet === 'class' && fin.n3 > 0
   const countsOk = [fin.n1, fin.n2, fin.n3].every((v) => Number.isInteger(v) && v >= 0) && fin.n1 <= 50 && fin.n2 <= 10 && fin.n3 <= 20
   const preview = useMemo(
     () => (cfg.sheet === 'class' && countsOk && fin.n1 + fin.n2 + fin.n3 > 0 ? sheetPreviewSvg(fin) : ''),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [cfg.sheet, fin.n1, fin.n2, fin.n3, fin.paper, fin.bigBubbles, countsOk],
+    [cfg.sheet, fin.n1, fin.n2, fin.n3, fin.paper, fin.bigBubbles, fin.p3Mode, countsOk],
   )
 
   function validate(): string {
@@ -118,6 +122,8 @@ export default function TeacherPaperGrading() {
       if (cfg.n1 > GRID35_LIMITS.n1 || cfg.n2 || cfg.n3)
         return `Phiếu 35 câu chỉ có phần trắc nghiệm A–D: tối đa ${GRID35_LIMITS.n1} câu Phần 1, Phần 2 và Phần 3 phải bằng 0.`
     } else if (cfg.n1 > 50 || cfg.n2 > 10 || cfg.n3 > 20) return 'Tối đa 50 câu Phần 1, 10 câu Phần 2, 20 câu Phần 3.'
+    else if (cfg.n3 > P3_GRID_MAX) return `Phiếu web tạo: Phần III (lưới tô ô) tối đa ${P3_GRID_MAX} câu.`
+    else if (!fitsA4(fin)) return 'Đề quá dài, phiếu không vừa 1 trang A4 — hãy giảm số câu.'
     if (fin.n1 + fin.n2 + fin.n3 === 0) return p12 ? 'Phần I và Phần II phải có ít nhất 1 câu.' : 'Đề phải có ít nhất 1 câu.'
     for (const k of ['p1', 'p2', 'p3'] as (keyof PaperConfig)[]) {
       const v = cfg[k] as number
@@ -240,12 +246,12 @@ export default function TeacherPaperGrading() {
               <div>
                 <label>Khổ phiếu</label>
                 <div className="choice-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))' }}>
-                  <label className={`choice mini ${cfg.paper === 'A5' ? 'on' : ''} ${half ? '' : 'disabled'}`} title={half ? '' : 'Đề quá dài, không vừa nửa trang A4'}>
+                  <label className={`choice mini ${cfg.paper === 'A5' ? 'on' : ''} ${half ? '' : 'disabled'}`} title={half ? '' : p3Grid ? 'Phần III lưới tô cần 1 trang A4' : 'Đề quá dài, không vừa nửa trang A4'}>
                     <input type="radio" name="paper" disabled={!half} checked={cfg.paper === 'A5'} onChange={() => setCfg((c) => ({ ...c, paper: 'A5' }))} />
                     <span className="ico">✂️</span>
                     <span>
                       <span className="t">Nửa trang A4</span>
-                      <span className="d">{half ? 'In 2 phiếu/tờ A4 rồi cắt đôi — tiết kiệm giấy.' : 'Đề quá dài, không vừa nửa trang.'}</span>
+                      <span className="d">{half ? 'In 2 phiếu/tờ A4 rồi cắt đôi — tiết kiệm giấy.' : p3Grid ? 'Chỉ dùng khi đề không có Phần III (lưới tô cần 1 trang A4).' : 'Đề quá dài, không vừa nửa trang.'}</span>
                     </span>
                     <span className="tick">✓</span>
                   </label>
@@ -263,6 +269,13 @@ export default function TeacherPaperGrading() {
                   Phiếu sẽ in: <b>{describeClassPaper(counts, fin.paper, fin.bigBubbles)}</b>. Máy quét dùng đúng bố cục này nên phiếu in ra
                   luôn khớp. Có thể tải phiếu ngay bây giờ hoặc ở trang đợt chấm.
                 </p>
+                {p3Grid && (
+                  <p className="p3-note">
+                    <b>Phần III – lưới tô ô chuẩn Bộ GD&amp;ĐT:</b> mỗi câu 4 cột, mỗi cột tô một ô (dấu −, dấu phẩy hoặc chữ số 0–9), ghép từ
+                    trái sang phải; ô vuông trên cùng chỉ để ghi nháp. Máy đọc cả Phần III bằng xử lý ảnh (không đọc chữ viết tay). Tô 2 ô
+                    trong một cột tính sai. Đáp án Phần III phải tô được trên lưới (tối đa 4 ký tự, VD −1,5; 0,25; 2026).
+                  </p>
+                )}
                 <div className="toolbar">
                   <button type="button" className="btn accent" disabled={!preview || pdfBusy === 'new'} onClick={() => pdf(fin, title, 'new')}>
                     <span className="ico">⬇</span> {pdfBusy === 'new' ? 'Đang tạo PDF…' : 'Tải phiếu (PDF)'}
@@ -277,7 +290,7 @@ export default function TeacherPaperGrading() {
                   Xem trước {fin.paper === 'A5' ? '(1 trong 2 phiếu trên tờ A4)' : ''}
                 </p>
                 {preview ? (
-                  <div className="paper" dangerouslySetInnerHTML={{ __html: preview }} />
+                  <div className={`paper ${fin.paper === 'A5' ? '' : 'a4'}`} dangerouslySetInnerHTML={{ __html: preview }} />
                 ) : (
                   <p className="small muted" style={{ textAlign: 'center' }}>
                     Nhập số câu hợp lệ để xem trước.

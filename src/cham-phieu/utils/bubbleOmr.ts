@@ -1,7 +1,8 @@
 /**
  * ĐỌC Ô TÔ (bubble) TRÊN PHIẾU TRẢ LỜI BẰNG XỬ LÝ ẢNH — KHÔNG DÙNG AI
  *
- * Phần I (A/B/C/D) và Phần II (Đúng/Sai) được đọc bằng toạ độ điểm ảnh nên kết quả
+ * Phần I (A/B/C/D), Phần II (Đúng/Sai) và Phần III lưới tô (dấu −, dấu phẩy, chữ số — phiếu lớp mới)
+ * được đọc bằng toạ độ điểm ảnh nên kết quả
  * ổn định, không "đoán". Các bước:
  *   1. Ảnh -> ảnh xám (lấy kênh tối nhất để mực xanh cũng thành đậm), thu nhỏ hợp lí.
  *   2. Nhị phân hoá cục bộ -> tìm các ô vuông đen ■ (mốc định vị).
@@ -29,11 +30,13 @@ export interface Pt {
   y: number
 }
 
-/** Một hàng lựa chọn: Phần I = 4 ô A..D, Phần II = 2 ô Đúng/Sai */
+/** Một hàng lựa chọn: Phần I = 4 ô A..D, Phần II = 2 ô Đúng/Sai, Phần III = MỘT CỘT của lưới tô (10–11 ô dọc) */
 export interface BubbleRow {
-  part: 1 | 2
+  part: 1 | 2 | 3
   q: number // số thứ tự câu (bắt đầu 1)
   sub?: number // Phần II: ý 0..3 (a..d)
+  col?: number // Phần III: cột 0..3
+  chars?: string[] // Phần III: ký tự của từng ô trong cột ('-', ',', '0'..'9')
   block: string // các hàng cùng khối được căn chỉnh chung
   r?: number // bán kính ô (tâm nét viền), mặc định = template.bubbleR
   opts: Pt[] // tâm các ô (toạ độ mẫu)
@@ -57,8 +60,10 @@ export interface SheetTemplate {
   code?: { bits: Pt[]; size: number; value: number; describe: (v: number) => string }
   /** Khung bao toàn phiếu (đơn vị mẫu) — để vẽ ảnh đối chiếu */
   frame: { x: number; y: number; w: number; h: number }
-  /** Ô ghi đáp số Phần III (phiếu lớp) — để đánh dấu đúng/sai trên ảnh đối chiếu */
+  /** Ô ghi đáp số Phần III (phiếu lớp viết tay) hoặc khung khối câu Phần III (lưới tô) — để đánh dấu đúng/sai trên ảnh đối chiếu */
   p3Boxes?: { q: number; x: number; y: number; w: number; h: number }[]
+  /** Phần III là lưới tô ô (đọc bằng xử lý ảnh, không gửi AI) */
+  p3Grid?: boolean
 }
 
 export interface BubbleRead {
@@ -66,9 +71,11 @@ export interface BubbleRead {
   p1: (string | null)[]
   /** Phần II: [câu][ý] -> true/false/null */
   p2: (boolean | null)[][]
+  /** Phần III lưới tô: chuỗi đáp số ghép từ các cột ("-1,5"); 'INVALID' = tô đúp / chuỗi không phải số; null = bỏ trống */
+  p3: (string | null)[]
   flags: Record<string, string>
-  /** Điểm đậm từng ô theo hàng (để vẽ ảnh đối chiếu, gỡ lỗi) */
-  detail: { row: BubbleRow; centers: Pt[]; scores: number[]; rings: number[]; chosen: number | null; flagged: boolean }[]
+  /** Điểm đậm từng ô theo hàng (để vẽ ảnh đối chiếu, gỡ lỗi). marks: Phần III — các ô máy coi là đã tô trong cột */
+  detail: { row: BubbleRow; centers: Pt[]; scores: number[]; rings: number[]; chosen: number | null; flagged: boolean; marks?: number[] }[]
   /** Ma trận đồng nhất: toạ độ mẫu -> toạ độ ảnh gốc */
   H: number[]
   quality: number // 0..1: độ khớp mẫu
@@ -1212,7 +1219,12 @@ function coverScore(p: Patch, c: Pt, R: number): number {
 export interface ReadBubblesOptions {
   n1: number
   n2: number
+  /** số câu Phần III lưới tô cần đọc (0 / không có = không đọc Phần III) */
+  n3?: number
 }
+
+/** Đáp số hợp lệ ghép từ lưới tô: số nguyên hoặc thập phân dấu phẩy, có thể có dấu trừ */
+export const P3_VALID = /^-?\d+(,\d+)?$/
 
 export function readBubbles(g: Gray, t: SheetTemplate, opt: ReadBubblesOptions): BubbleRead {
   const { H, quality } = t.kind === 'grid' ? locateGridMulti(g, t) : locateMulti(g, t)
@@ -1235,7 +1247,8 @@ export function readBubbles(g: Gray, t: SheetTemplate, opt: ReadBubblesOptions):
   const pxPerUnit = Math.hypot(q1.x - q0.x, q1.y - q0.y) / Math.hypot(TR.x - TL.x, TR.y - TL.y)
   const scale = t.kind === 'grid' ? pxPerUnit : Math.min(12 / Math.min(R0, ...t.rows.map((r) => r.r ?? R0)), pxPerUnit * 1.5)
 
-  const used = t.rows.filter((r) => (r.part === 1 ? r.q <= opt.n1 : r.q <= opt.n2))
+  const n3 = opt.n3 ?? 0
+  const used = t.rows.filter((r) => (r.part === 1 ? r.q <= opt.n1 : r.part === 2 ? r.q <= opt.n2 : r.q <= n3))
   const blocks = new Map<string, BubbleRow[]>()
   for (const r of t.rows) {
     if (!blocks.has(r.block)) blocks.set(r.block, [])
@@ -1277,6 +1290,34 @@ export function readBubbles(g: Gray, t: SheetTemplate, opt: ReadBubblesOptions):
     }
     const common = Math.min(...optBase)
     for (const d of p1d) d.scores = d.scores.map((v, i) => Math.max(0, v - (optBase[i] - common)))
+  }
+
+  // Phần III lưới tô: chữ số / dấu in XÁM bên trong ô -> ô trống của số "8" sẫm hơn ô trống của số "1".
+  // Mức nền riêng của từng ký tự = giá trị thấp (phân vị 25%, ít mẫu thì lấy nhỏ nhất) của ký tự đó qua mọi cột,
+  // rồi trừ phần chênh so với ký tự có nền thấp nhất. Ký tự quá ít mẫu (dấu −, dấu phẩy khi đề 1–2 câu) dùng nền chung.
+  const p3d = detail.filter((d) => d.row.part === 3)
+  if (p3d.length) {
+    const byChar = new Map<string, number[]>()
+    for (const d of p3d)
+      d.scores.forEach((v, i) => {
+        const ch = d.row.chars?.[i] ?? String(i)
+        if (!byChar.has(ch)) byChar.set(ch, [])
+        byChar.get(ch)!.push(v)
+      })
+    const charBase = new Map<string, number>()
+    for (const [ch, vs] of byChar) {
+      if (vs.length < 3) continue
+      const v = [...vs].sort((a, b) => a - b)
+      charBase.set(ch, v[v.length >= 8 ? Math.floor(v.length * 0.25) : 0])
+    }
+    if (charBase.size) {
+      const common = Math.min(...charBase.values())
+      for (const d of p3d)
+        d.scores = d.scores.map((v, i) => {
+          const b = charBase.get(d.row.chars?.[i] ?? String(i))
+          return b === undefined ? v : Math.max(0, v - (b - common))
+        })
+    }
   }
 
   // Ngưỡng thích nghi theo cả phiếu: mức mực = trung vị các ô tô rõ
@@ -1330,8 +1371,9 @@ export function readBubbles(g: Gray, t: SheetTemplate, opt: ReadBubblesOptions):
     return c.length >= 3 ? c[Math.floor(c.length * 0.25)] : null
   }
   const r1 = riseOfPart(1),
-    r2 = riseOfPart(2)
-  const sheetRiseOf = (part: number) => (part === 1 ? r1 ?? r2 : r2 ?? r1) ?? 0.5
+    r2 = riseOfPart(2),
+    r3 = riseOfPart(3)
+  const sheetRiseOf = (part: number) => (part === 1 ? r1 ?? r2 ?? r3 : part === 2 ? r2 ?? r1 ?? r3 : r3 ?? r1 ?? r2) ?? 0.5
 
   // Độ rõ viền ô trống ở vị trí đã dò (căn đúng: viền rõ; lệch hàng/cột: gần như mất viền)
   const emptyRings = detail
@@ -1353,6 +1395,7 @@ export function readBubbles(g: Gray, t: SheetTemplate, opt: ReadBubblesOptions):
   const flags: Record<string, string> = {}
   const LET = ['A', 'B', 'C', 'D']
   detail.forEach((d, k) => {
+    if (d.row.part === 3) return // Phần III quyết định riêng bên dưới
     const { row, scores } = d
     const name = (i: number) => (row.part === 1 ? LET[i] : i === 0 ? 'Đúng' : 'Sai')
     const order = scores.map((v, i) => ({ v, i })).sort((a, b) => b.v - a.v)
@@ -1418,7 +1461,88 @@ export function readBubbles(g: Gray, t: SheetTemplate, opt: ReadBubblesOptions):
     if (row.part === 1) p1[row.q - 1] = chosen === null ? null : LET[chosen]
     else p2[row.q - 1][row.sub ?? 0] = chosen === null ? null : chosen === 0
   })
-  return { p1, p2, flags, detail, H, quality, inkLevel }
+
+  // ---------- PHẦN III: LƯỚI TÔ ----------
+  // Từng cột: cùng tiêu chí "tô rõ" như Phần I, II (độ chênh so với mức ô trống của vùng + mức tô của chính phiếu).
+  // Cột bỏ trống là bình thường (đáp số ngắn) -> không gắn cờ. Tô ≥ 2 ô trong một cột -> INVALID (tính sai).
+  const p3: (string | null)[] = Array.from({ length: n3 }, () => null)
+  const showCh = (ch: string) => (ch === '-' ? '−' : ch)
+  type ColRes = { d: Det; col: number; chosen: number | null; multi: number[]; faint: number | null; smudge: number | null }
+  const cols = new Map<number, ColRes[]>()
+  detail.forEach((d, k) => {
+    if (d.row.part !== 3) return
+    const { scores } = d
+    const order = scores.map((v, i) => ({ v, i })).sort((a, b) => b.v - a.v)
+    const top = order[0],
+      second = order[1]
+    const rowMin = order[order.length - 1].v
+    const base = Math.min(baseOf[k].b, rowMin)
+    const spread = Math.min(0.05, baseOf[k].spread)
+    const rise = top.v - base
+    const sr = sheetRiseOf(3)
+    const strongInk = rise >= Math.max(0.15, 4 * spread) && top.v >= hiGlobal * 0.75
+    const strongLight = rise >= Math.max(0.08, 5 * spread, 0.45 * sr)
+    const strong = strongInk || strongLight
+    const minGap = strongInk ? Math.max(0.12, 0.35 * rise) : Math.max(0.06, 0.5 * rise)
+    const thr = Math.min(Math.max(0.15, 4 * spread), Math.max(0.08, 5 * spread, 0.45 * sr))
+    const res: ColRes = { d, col: d.row.col ?? 0, chosen: null, multi: [], faint: null, smudge: null }
+    if (strong && top.v - second.v >= minGap) {
+      res.chosen = top.i
+      if (second.v - base >= Math.max(0.1, 4 * spread) && second.v > top.v * 0.45) res.smudge = second.i
+    } else if (strong) {
+      const many = order.filter((o) => o.v - base >= thr && top.v - o.v < minGap).map((o) => o.i)
+      res.multi = many.length >= 2 ? many : [top.i, second.i]
+    } else if (rowMin - baseOf[k].b >= 0.15 && rowMin >= hiGlobal * 0.75) {
+      res.multi = order.map((o) => o.i) // cả cột sẫm (tô hết / bóng tối đè)
+    } else if (rise >= Math.max(0.06, 2.5 * spread)) {
+      res.faint = top.i
+    }
+    d.chosen = res.chosen
+    d.marks = res.chosen !== null ? [res.chosen] : res.multi
+    if (!cols.has(d.row.q)) cols.set(d.row.q, [])
+    cols.get(d.row.q)!.push(res)
+  })
+  for (const [q, list] of cols) {
+    list.sort((a, b) => a.col - b.col)
+    const ch = (r: ColRes, i: number) => r.d.row.chars?.[i] ?? '?'
+    const notes: string[] = []
+    let invalid = false
+    for (const r of list)
+      if (r.multi.length >= 2) {
+        invalid = true
+        notes.push(`Tô ${r.multi.length} ô ở cột ${r.col + 1} (${r.multi.map((i) => showCh(ch(r, i))).join(', ')})`)
+      }
+    for (const r of list) {
+      if (r.faint !== null) notes.push(`Cột ${r.col + 1}: ô ${showCh(ch(r, r.faint))} tô mờ / có vết tẩy — chưa chắc học sinh chọn`)
+      if (r.smudge !== null && r.chosen !== null)
+        notes.push(`Cột ${r.col + 1}: ô ${showCh(ch(r, r.chosen))} tô đậm nhưng ô ${showCh(ch(r, r.smudge))} có vết mờ (tẩy chưa sạch?)`)
+    }
+    const filled = list.filter((r) => r.chosen !== null)
+    const str = filled.map((r) => ch(r, r.chosen!)).join('')
+    let value: string | null
+    if (invalid) {
+      value = 'INVALID'
+      notes[0] += ' — tô không hợp lệ, tính sai'
+    } else if (!str) {
+      value = null
+      if (!notes.length) notes.push('Không thấy ô nào được tô — kiểm tra lại (học sinh bỏ trống?)')
+    } else if (!P3_VALID.test(str)) {
+      value = 'INVALID'
+      notes.unshift(`Đọc được "${str.replace(/-/g, '−')}" — không phải số hợp lệ, tính sai`)
+    } else {
+      value = str
+      // cột để không xen giữa các ký tự đã tô (VD tô cột 1 và cột 3): vẫn ghép, nhưng để giáo viên liếc lại
+      const idx = filled.map((r) => r.col)
+      if (idx.some((c, i) => i > 0 && c !== idx[i - 1] + 1))
+        notes.push(`Các ký tự tô không liền cột (cột ${idx.map((c) => c + 1).join(', ')}), máy ghép thành "${str}" — kiểm tra lại`)
+    }
+    if (q <= n3) p3[q - 1] = value
+    if (notes.length) {
+      flags[`3.${q}`] = notes.join('; ')
+      for (const r of list) r.d.flagged = true
+    }
+  }
+  return { p1, p2, p3, flags, detail, H, quality, inkLevel }
 }
 
 /**
@@ -1490,7 +1614,7 @@ function decideGrid(detail: BubbleRead['detail'], opt: ReadBubblesOptions, H: nu
   })
   const marked = detail.filter((d) => d.chosen !== null).map((d) => d.scores[d.chosen!]).sort((a, b) => a - b)
   const inkLevel = marked.length ? marked[Math.floor(marked.length / 2)] : 0
-  return { p1, p2, flags, detail, H, quality, inkLevel }
+  return { p1, p2, p3: [], flags, detail, H, quality, inkLevel }
 }
 
 function spacingOf(rows: BubbleRow[]): number {

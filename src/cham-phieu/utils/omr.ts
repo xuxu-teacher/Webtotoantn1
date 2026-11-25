@@ -9,7 +9,18 @@
  */
 import { supabase } from '../lib/supabase'
 import { Gray, OmrError, Pt, SheetTemplate, applyH, readBubbles, rgbaToGray, warpRegion, BubbleRead } from './bubbleOmr'
-import { ClassStyle, PaperSize, buildClassLayoutFor, classLayout, grid35Template, resolveClassPaper, schoolTemplate } from './sheetTemplates'
+import {
+  ClassCounts,
+  ClassStyle,
+  P3_GRID_MAX,
+  PaperSize,
+  buildClassLayoutFor,
+  classLayout,
+  grid35Template,
+  p3Fillable,
+  resolveClassPaper,
+  schoolTemplate,
+} from './sheetTemplates'
 
 // ---------------- KIỂU DỮ LIỆU ----------------
 
@@ -40,7 +51,27 @@ export interface PaperConfig {
    * 'all' hoặc không có = chấm theo số câu đã khai báo.
    */
   parts?: 'p12' | 'all'
+  /**
+   * Phần III của phiếu lớp (web tạo): 'bubble' = lưới tô ô chuẩn Bộ GD&ĐT (4 cột: dấu −, dấu phẩy, chữ số) đọc bằng xử lý ảnh;
+   * 'write' / không có = ô viết tay, AI đọc (đợt chấm tạo trước phiên bản này — giữ nguyên để phiếu đã in vẫn quét được).
+   * Phiếu trường, phiếu 35 câu không dùng trường này.
+   */
+  p3Mode?: 'bubble' | 'write'
 }
+
+/** Phiếu lớp có Phần III dạng lưới tô ô (đọc bằng máy, không gửi AI) */
+export function p3Bubble(cfg: PaperConfig): boolean {
+  return cfg.sheet === 'class' && cfg.p3Mode === 'bubble' && cfg.n3 > 0
+}
+
+/** Số câu + kiểu Phần III để dựng bố cục phiếu lớp */
+export function classCounts(cfg: PaperConfig): ClassCounts {
+  return { n1: cfg.n1, n2: cfg.n2, n3: cfg.n3, p3Mode: cfg.p3Mode }
+}
+
+/** Giá trị Phần III của ô tô không hợp lệ (tô đúp một cột / chuỗi không phải số) — luôn tính sai */
+export const P3_INVALID = 'INVALID'
+export { P3_GRID_MAX }
 
 /** Chuẩn hoá cấu hình đọc từ CSDL: chỉ chấm Phần I, II thì Phần III luôn 0 câu */
 export function normalizeConfig(cfg: PaperConfig): PaperConfig {
@@ -64,6 +95,7 @@ export const DEFAULT_CONFIG: PaperConfig = {
   tfMethod: 'ministry_partial',
   sheet: 'class',
   identity: 'name',
+  p3Mode: 'bubble',
 }
 
 /** Bộ đáp án / bài làm đã chuẩn hoá. null = ô trống hoặc không đọc được */
@@ -99,9 +131,24 @@ export interface ReadResult {
 export interface OverlayGeo {
   w: number
   h: number
-  rows: { id: CellId; part: 1 | 2; centers: Pt[]; r: number; chosen: number | null; flagged: boolean }[]
-  /** Ô ghi đáp số Phần III (chỉ phiếu lớp) */
+  rows: {
+    id: CellId
+    part: 1 | 2 | 3
+    centers: Pt[]
+    r: number
+    chosen: number | null
+    flagged: boolean
+    /** Phần III lưới tô: cột 0..3, ký tự từng ô, các ô máy coi là đã tô */
+    col?: number
+    chars?: string[]
+    marks?: number[]
+  }[]
+  /** Ô ghi đáp số Phần III (phiếu lớp viết tay) hoặc khung khối câu Phần III (lưới tô) */
   p3: { q: number; x: number; y: number; w: number; h: number }[]
+  /** 'grid' = Phần III lưới tô (ảnh cũ không có trường này = ô viết tay) */
+  p3Mode?: 'grid' | 'box'
+  /** Phần III lưới tô: chuỗi máy đọc được lúc quét (để biết giáo viên đã sửa tay hay chưa) */
+  p3Read?: (string | null)[]
 }
 
 export interface PartScores {
@@ -349,6 +396,18 @@ export function missingKeyCells(key: PaperAnswers, cfg: PaperConfig): CellId[] {
 export function invalidShortKeys(key: PaperAnswers): CellId[] {
   return key.p3
     .map((v, i) => (v && shortValue(v) === null ? `3.${i + 1}` : ''))
+    .filter(Boolean)
+}
+
+/**
+ * Phiếu Phần III lưới tô: đáp án nào học sinh KHÔNG tô được trên lưới 4 cột (quá 4 ký tự, dấu phẩy ở cột 1 hoặc 4…).
+ * Đáp án dạng phân số vẫn chấp nhận (học sinh tô số thập phân đã làm tròn, máy so theo giá trị).
+ */
+export function unfillableP3Keys(key: PaperAnswers, cfg: PaperConfig): CellId[] {
+  if (!p3Bubble(cfg)) return []
+  return key.p3
+    .slice(0, cfg.n3)
+    .map((v, i) => (v && !/\//.test(v) && !p3Fillable(v) ? `3.${i + 1}` : ''))
     .filter(Boolean)
 }
 
@@ -710,8 +769,8 @@ export function keyIsComplete(key: PaperAnswers, cfg: PaperConfig): boolean {
 
 // ======================================================================
 // PHIẾU TÔ Ô (phiếu trường / phiếu lớp do web tạo)
-//   Phần I, II: đọc ô tô bằng xử lý ảnh (bubbleOmr.ts) — không dùng AI.
-//   Đầu phiếu + Phần III (viết tay): cắt vùng chữ, nắn thẳng, gửi AI đọc.
+//   Phần I, II (và Phần III lưới tô của phiếu lớp mới): đọc ô tô bằng xử lý ảnh (bubbleOmr.ts) — không dùng AI.
+//   Đầu phiếu + Phần III viết tay (phiếu trường / đợt chấm cũ): cắt vùng chữ, nắn thẳng, gửi AI đọc.
 // ======================================================================
 
 export function isBubbleSheet(cfg: PaperConfig): boolean {
@@ -721,7 +780,7 @@ export function isBubbleSheet(cfg: PaperConfig): boolean {
 export function templateFor(cfg: PaperConfig): SheetTemplate {
   if (cfg.sheet === 'school') return schoolTemplate()
   if (cfg.sheet === 'grid35') return grid35Template()
-  return classLayout({ n1: cfg.n1, n2: cfg.n2, n3: cfg.n3 }, cfg.paper, cfg.bigBubbles).template
+  return classLayout(classCounts(cfg), cfg.paper, cfg.bigBubbles).template
 }
 
 /** "01" = "1"; mã phách viết hoa, bỏ khoảng trắng — dùng để so khớp phách */
@@ -799,8 +858,23 @@ function mismatchHint(g: Gray, cfg: PaperConfig): string {
   const go = (name: string) => `Bấm "Đổi loại phiếu" ở đầu trang, chọn ${name}, rồi bấm Đọc lại.`
   if (cfg.sheet === 'class') {
     // phiếu web tạo nhưng in theo KHỔ khác (nửa trang / 1 trang / ô lớn) với khổ đợt chấm đang dùng
-    const counts = { n1: cfg.n1, n2: cfg.n2, n3: cfg.n3 }
+    const counts = classCounts(cfg)
     const cur = resolveClassPaper(counts, cfg.paper, cfg.bigBubbles)
+    // phiếu in Phần III kiểu khác (đợt chấm cũ dùng ô viết tay, đợt mới dùng lưới tô) — mã cấu trúc khác nhau
+    if (cfg.n3 > 0) {
+      const other: ClassCounts = { ...counts, p3Mode: counts.p3Mode === 'bubble' ? 'write' : 'bubble' }
+      for (const st of ['xl', 'big', 'std', 'compact'] as ClassStyle[])
+        for (const sz of ['A4', 'A5'] as PaperSize[]) {
+          try {
+            if (readBubbles(g, buildClassLayoutFor(other, sz, st).template, { n1: Math.min(1, cfg.n1), n2: 0 }).quality >= 0.9)
+              return other.p3Mode === 'bubble'
+                ? 'Phiếu này là mẫu MỚI (Phần III tô ô), nhưng đợt chấm này dùng mẫu cũ (Phần III viết tay). Hãy dùng đúng mẫu phiếu tải từ trang đợt chấm này.'
+                : 'Phiếu này là mẫu CŨ (Phần III viết tay), nhưng đợt chấm này dùng mẫu mới (Phần III tô ô). Hãy in lại phiếu từ trang đợt chấm này.'
+          } catch {
+            /* thử kiểu khác */
+          }
+        }
+    }
     const variants: { size: PaperSize; style: ClassStyle; label: string }[] = [
       { size: 'A5', style: 'std', label: 'Nửa trang A4' },
       { size: 'A4', style: 'xl', label: '1 trang A4 (ô lớn)' },
@@ -869,16 +943,32 @@ function overlayImage(g: Gray, br: BubbleRead, t: SheetTemplate): { overlay: str
     w: c.width,
     h: c.height,
     rows: br.detail.map((d) => ({
-      id: d.row.part === 1 ? `1.${d.row.q}` : `2.${d.row.q}${'abcd'[d.row.sub ?? 0]}`,
+      id: d.row.part === 1 ? `1.${d.row.q}` : d.row.part === 2 ? `2.${d.row.q}${'abcd'[d.row.sub ?? 0]}` : `3.${d.row.q}`,
       part: d.row.part,
       centers: d.centers.map((p) => ({ x: X(p.x), y: Y(p.y) })),
       r: (d.row.r ?? t.bubbleR) * scale,
       chosen: d.chosen,
       flagged: d.flagged,
+      ...(d.row.part === 3 ? { col: d.row.col, chars: d.row.chars, marks: d.marks || [] } : {}),
     })),
     p3: (t.p3Boxes || []).map((b) => ({ q: b.q, x: X(b.x), y: Y(b.y), w: b.w * scale, h: b.h * scale })),
+    p3Mode: t.p3Grid ? 'grid' : 'box',
+    ...(t.p3Grid ? { p3Read: br.p3 } : {}),
   }
   for (const d of br.detail) {
+    if (d.row.part === 3) {
+      // Phần III lưới tô: vòng xanh quanh ô máy đọc được; cột tô đúp -> vòng cam quanh các ô bị tô
+      const R = (d.row.r ?? t.bubbleR) * scale
+      for (const i of d.marks || []) {
+        const p = d.centers[i]
+        ctx.strokeStyle = d.flagged ? '#f59e0b' : '#16a34a'
+        ctx.lineWidth = Math.max(2, R * 0.3)
+        ctx.beginPath()
+        ctx.arc(X(p.x), Y(p.y), R * 1.4, 0, Math.PI * 2)
+        ctx.stroke()
+      }
+      continue
+    }
     const R = (d.row.r ?? t.bubbleR) * scale
     d.centers.forEach((p, i) => {
       // hàng cần rà: vòng cam quanh mọi ô; ô máy chọn (kể cả ở hàng cần rà): vòng xanh
@@ -983,11 +1073,13 @@ export async function readBubbleSheet(
   doubleCheck: boolean,
 ): Promise<ReadResult & { checked: boolean }> {
   const t = templateFor(cfg)
+  // Phần III lưới tô (phiếu lớp mới): máy đọc cùng lúc với Phần I, II — không gửi AI
+  const gridP3 = p3Bubble(cfg) && !!t.p3Grid
   const { rgba, w, h } = await loadRgba(dataUrl)
   const g = rgbaToGray(rgba, w, h, 2200)
   let br: BubbleRead
   try {
-    br = readBubbles(g, t, { n1: cfg.n1, n2: cfg.n2 })
+    br = readBubbles(g, t, { n1: cfg.n1, n2: cfg.n2, n3: gridP3 ? cfg.n3 : 0 })
   } catch (e) {
     if (e instanceof OmrError) throw new Error(mismatchHint(g, cfg) || e.message)
     throw e
@@ -995,6 +1087,7 @@ export async function readBubbleSheet(
   const answers = emptyAnswers(cfg)
   answers.p1 = br.p1
   answers.p2 = br.p2
+  if (gridP3) for (let i = 0; i < cfg.n3; i++) answers.p3[i] = br.p3[i] ?? null
   const flags: Record<CellId, string> = { ...br.flags }
   // Ảnh mờ / chụp lệch góc: độ khớp khung phiếu thấp -> mọi ô đọc được đều kém chắc chắn, bắt giáo viên đối chiếu
   const okQ = t.kind === 'grid' ? 0.97 : 0.9
@@ -1009,17 +1102,19 @@ export async function readBubbleSheet(
   // ảnh xám GIỮ mực đỏ: số phách / điểm thường viết mực đỏ (ảnh dùng đọc ô tô đã xoá mực đỏ của giáo viên chấm)
   const gc = rgbaToGray(rgba, w, h, 2200, false)
   const ov = overlayImage(gc, br, t)
-  const withP3 = !skipsP3(cfg) && cfg.n3 > 0
+  // AI chỉ đọc Phần III khi Phần III là ô VIẾT TAY (phiếu trường, đợt chấm cũ)
+  const withP3 = !skipsP3(cfg) && cfg.n3 > 0 && !gridP3
+  const n3w = withP3 ? cfg.n3 : 0
 
   const img = handwritingImage(gc, br, t, withP3).replace(/^data:image\/\w+;base64,/, '')
-  const body = { image: img, mode: 'fields', kind: cfg.sheet, n1: cfg.n1, n2: cfg.n2, n3: withP3 ? cfg.n3 : 0 }
+  const body = { image: img, mode: 'fields', kind: cfg.sheet, n1: cfg.n1, n2: cfg.n2, n3: n3w, p3bubble: gridP3 }
   let fields: FieldsRead | null = null
   let checked = false
   let aiError = ''
   if (!doubleCheck) {
     try {
       const a = await callOmrRaw({ ...body, modelOffset: 0 })
-      fields = parseFields(a.data, cfg.n3, a.model)
+      fields = parseFields(a.data, n3w, a.model)
     } catch (e) {
       aiError = (e as Error).message
     }
@@ -1028,14 +1123,14 @@ export async function readBubbleSheet(
     const ok = [ra, rb].filter((x): x is PromiseFulfilledResult<{ data: unknown; model: string }> => x.status === 'fulfilled')
     if (!ok.length) aiError = (ra as PromiseRejectedResult).reason?.message || 'AI lỗi'
     else {
-      const a = parseFields(ok[0].value.data, cfg.n3, ok[0].value.model)
+      const a = parseFields(ok[0].value.data, n3w, ok[0].value.model)
       fields = a
       if (ok.length === 2 && ok[0].value.model !== ok[1].value.model) {
-        const b = parseFields(ok[1].value.data, cfg.n3, ok[1].value.model)
+        const b = parseFields(ok[1].value.data, n3w, ok[1].value.model)
         checked = true
         fields = { ...a, model: `${a.model} + ${b.model}`, flags: { ...b.flags, ...a.flags } }
         const show = (v: string | null) => v || 'trống'
-        for (let i = 0; i < cfg.n3; i++) {
+        for (let i = 0; i < n3w; i++) {
           const x = a.p3[i],
             y = b.p3[i]
           const same = (!x && !y) || (!!x && !!y && (x === y || paperShortEqual(x, y)))
@@ -1051,10 +1146,11 @@ export async function readBubbleSheet(
     }
   }
   if (fields) {
-    answers.p3 = fields.p3
+    if (withP3) answers.p3 = fields.p3
     Object.assign(flags, fields.flags)
   } else {
-    flags['ai'] = `Chưa đọc được phần viết tay (mã đề${cfg.sheet === 'class' ? ', họ tên' : ', phách'}${withP3 ? ', Phần III' : ''}): ${aiError.replace(/\.+$/, '')}. ${cfg.n2 ? 'Phần I, II' : 'Phần trắc nghiệm'} vẫn đã đọc xong — cô nhập tay phần còn lại hoặc bấm Đọc lại sau.`
+    const done = gridP3 ? 'Phần I, II, III (ô tô)' : cfg.n2 ? 'Phần I, II' : 'Phần trắc nghiệm'
+    flags['ai'] = `Chưa đọc được phần viết tay (mã đề${cfg.sheet === 'class' ? ', họ tên' : ', phách'}${withP3 ? ', Phần III' : ''}): ${aiError.replace(/\.+$/, '')}. ${done} vẫn đã đọc xong — cô nhập tay phần còn lại hoặc bấm Đọc lại sau.`
   }
   return {
     name: fields?.name || '',
@@ -1066,7 +1162,7 @@ export async function readBubbleSheet(
     answers,
     flags,
     note: fields?.note || '',
-    model: fields ? `Ô tô: xử lý ảnh · Chữ viết: ${fields.model}` : 'Ô tô: xử lý ảnh',
+    model: (gridP3 ? 'Ô tô (cả Phần III): xử lý ảnh' : 'Ô tô: xử lý ảnh') + (fields ? ` · Chữ viết: ${fields.model}` : ''),
     overlay: ov.overlay,
     overlayBase: ov.base,
     overlayGeo: ov.geo,

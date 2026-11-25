@@ -9,6 +9,7 @@
  *   OMR_MODELS (tuỳ chọn) – danh sách model riêng cho chấm phiếu, ưu tiên hơn GEMINI_MODELS
  *
  * Body: { image: base64, mode: 'key'|'sheet'|'fields'|'keytable', kind?: 'school'|'class'|'grid35', n1, n2, n3, modelOffset?: number,
+ *         p3bubble?: boolean (phiếu lớp mới: Phần III là lưới tô do máy đọc — AI chỉ đọc phần đầu phiếu, gửi kèm n3 = 0),
  *         text?: string (lớp chữ của trang PDF bảng đáp án, nếu có),
  *         images?: string[], texts?: string[] (bảng đáp án NHIỀU TRANG gửi cùng lúc — thay cho image/text) }
  *   modelOffset = 1: bắt đầu từ model thứ hai trong danh sách (dùng cho lần đọc đối chiếu)
@@ -77,7 +78,7 @@ CHỈ TRẢ VỀ JSON đúng dạng sau (mảng p1 có đúng ${n1} phần tử,
 }
 
 /** Phiếu tô ô: chỉ còn các ô VIẾT TAY (thông tin đầu phiếu + Phần III) cần AI đọc */
-function fieldsPrompt(kind: 'school' | 'class' | 'grid35', n3: number): string {
+function fieldsPrompt(kind: 'school' | 'class' | 'grid35', n3: number, p3bubble = false): string {
   if (kind === 'grid35')
     return `Bạn là máy đọc chữ viết tay trên phiếu trả lời trắc nghiệm (THPT Việt Nam).
 Ảnh là PHẦN ĐẦU phiếu "PHIẾU TRẢ LỜI" đã cắt và nắn thẳng, gồm một bảng 3 ô: "Mã đề thi:", "Mã phách:", "Điểm:".
@@ -108,7 +109,11 @@ CHỈ TRẢ VỀ JSON:
 Ảnh là PHẦN ĐẦU phiếu đã cắt và nắn thẳng. Nhiệm vụ DUY NHẤT: chép lại CHÍNH XÁC chữ/số viết tay. KHÔNG đoán, KHÔNG tự sửa.
 
 ${header}
-- KHÔNG đọc Phần III (đợt chấm này không chấm Phần III) — luôn trả "p3": [].
+${
+  p3bubble
+    ? '- KHÔNG đọc Phần III (Phần III là lưới tô ô, máy đã đọc bằng xử lý ảnh; ảnh gửi kèm không có Phần III) — luôn trả "p3": [].'
+    : '- KHÔNG đọc Phần III (đợt chấm này không chấm Phần III) — luôn trả "p3": [].'
+}
 
 QUY TẮC
 1. Chú ý phân biệt 1 và 7, 4 và 9, 0 và 6, 5 và S, 2 và Z.
@@ -318,7 +323,7 @@ export default async function handler(req: Req, res: Res) {
   const hasText = texts.some((t) => t.trim())
   const system =
     m === 'fields'
-      ? fieldsPrompt(body?.kind === 'class' ? 'class' : body?.kind === 'grid35' ? 'grid35' : 'school', n3)
+      ? fieldsPrompt(body?.kind === 'class' ? 'class' : body?.kind === 'grid35' ? 'grid35' : 'school', body?.p3bubble === true ? 0 : n3, body?.p3bubble === true)
       : m === 'keytable'
         ? keyTablePrompt(n1, n2, n3, hasText, images.length)
         : systemPrompt(n1, n2, n3, m === 'key' ? 'key' : 'sheet')
