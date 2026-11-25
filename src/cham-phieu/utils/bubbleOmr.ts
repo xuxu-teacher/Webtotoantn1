@@ -57,6 +57,8 @@ export interface SheetTemplate {
   code?: { bits: Pt[]; size: number; value: number; describe: (v: number) => string }
   /** Khung bao toàn phiếu (đơn vị mẫu) — để vẽ ảnh đối chiếu */
   frame: { x: number; y: number; w: number; h: number }
+  /** Ô ghi đáp số Phần III (phiếu lớp) — để đánh dấu đúng/sai trên ảnh đối chiếu */
+  p3Boxes?: { q: number; x: number; y: number; w: number; h: number }[]
 }
 
 export interface BubbleRead {
@@ -1218,7 +1220,7 @@ export function readBubbles(g: Gray, t: SheetTemplate, opt: ReadBubblesOptions):
     const v = readCode(g, H, t.code.bits, t.code.size)
     if (v === 0)
       throw new OmrError(
-        'Ảnh này không có dãy ô mã của phiếu lớp (do web in) — có thể là PHIẾU CỦA TRƯỜNG. Nếu đúng vậy, bấm "Đổi sang phiếu của trường" ở đầu trang rồi bấm Đọc lại.',
+        'Ảnh này không có dãy ô mã của phiếu lớp (do web in) — có thể là PHIẾU CỦA TRƯỜNG. Nếu đúng vậy, chọn "↔ Đổi loại phiếu…" ở đầu trang rồi bấm Đọc lại.',
       )
     if (v !== t.code.value)
       throw new OmrError(

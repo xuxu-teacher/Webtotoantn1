@@ -1,9 +1,10 @@
-import { FormEvent, useEffect, useState } from 'react'
+import { FormEvent, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { supabase } from '../lib/supabase'
 import { useAuth } from '../auth'
 import { DEFAULT_CONFIG, PaperConfig, SheetKind } from '../utils/omr'
-import { GRID35_LIMITS, SCHOOL_LIMITS, autoPaperSize } from '../utils/sheetTemplates'
+import { GRID35_LIMITS, SCHOOL_LIMITS, describeClassPaper, fitsHalfA4 } from '../utils/sheetTemplates'
+import { downloadSheetPdf, openPrintSheets, sheetPreviewSvg } from '../utils/printSheets'
 
 interface BatchRow {
   id: string
@@ -18,6 +19,36 @@ interface ClassLite {
   class_name: string
 }
 
+const SHEETS: [SheetKind, string, string, string][] = [
+  ['class', '📝', 'Phiếu tô ô do web tạo', 'Bài kiểm tra tại lớp: đúng số câu của đề, có Họ tên – STT – Lớp – Mã đề. Tải / in phiếu ngay bên dưới.'],
+  ['school', '🏫', 'Phiếu của trường (đã cắt phách)', 'Phiếu in sẵn 40 – 6 – 8 câu của trường; nhận diện bài bằng Mã phách + Số phách.'],
+  ['grid35', '🔤', 'Phiếu 35 câu (chữ A B C D trong ô)', 'Phiếu in sẵn 35 câu, 4 cột, không có ô vuông đen; có Mã đề thi + Mã phách. Chỉ chấm trắc nghiệm.'],
+]
+
+const sheetLabel = (c: PaperConfig) =>
+  c.sheet === 'school'
+    ? c.parts === 'p12'
+      ? 'Trường · P1+P2'
+      : 'Trường (phách)'
+    : c.sheet === 'grid35'
+      ? '35 câu (phách)'
+      : c.sheet === 'class'
+        ? c.paper === 'A5'
+          ? 'Web tạo · ½ A4'
+          : 'Web tạo · 1 trang A4'
+        : 'Viết tay (cũ)'
+
+/** Cấu hình thực sự sẽ lưu khi tạo đợt */
+function finalConfig(cfg: PaperConfig): PaperConfig {
+  if (cfg.sheet === 'school') {
+    const p12 = cfg.parts === 'p12'
+    return { ...cfg, identity: 'phach', paper: undefined, bigBubbles: undefined, parts: p12 ? 'p12' : 'all', n3: p12 ? 0 : cfg.n3 }
+  }
+  if (cfg.sheet === 'grid35') return { ...cfg, identity: 'phach', paper: undefined, bigBubbles: undefined, parts: undefined }
+  const half = cfg.paper === 'A5' && fitsHalfA4(cfg)
+  return { ...cfg, sheet: 'class', identity: 'name', paper: half ? 'A5' : 'A4', bigBubbles: !half, parts: undefined }
+}
+
 /** Danh sách đợt chấm phiếu giấy + tạo đợt mới */
 export default function TeacherPaperGrading() {
   const { teacher } = useAuth()
@@ -26,10 +57,15 @@ export default function TeacherPaperGrading() {
   const [classes, setClasses] = useState<ClassLite[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
+  const [pdfBusy, setPdfBusy] = useState('')
 
   const [title, setTitle] = useState('')
   const [classId, setClassId] = useState('')
-  const [cfg, setCfg] = useState<PaperConfig>(DEFAULT_CONFIG)
+  const [cfg, setCfg] = useState<PaperConfig>(() => ({
+    ...DEFAULT_CONFIG,
+    paper: fitsHalfA4(DEFAULT_CONFIG) ? 'A5' : 'A4',
+    parts: 'all',
+  }))
   const [saving, setSaving] = useState(false)
 
   async function load() {
@@ -52,41 +88,69 @@ export default function TeacherPaperGrading() {
 
   const num = (k: keyof PaperConfig, v: string) => setCfg((c) => ({ ...c, [k]: Number(v) }))
 
-  async function create(e: FormEvent) {
-    e.preventDefault()
-    setError('')
-    const ints: (keyof PaperConfig)[] = ['n1', 'n2', 'n3']
-    for (const k of ints) {
+  const half = fitsHalfA4(cfg)
+  // đề dài ra không còn vừa nửa trang -> tự chuyển sang 1 trang (và báo)
+  useEffect(() => {
+    if (cfg.sheet === 'class' && cfg.paper === 'A5' && !half) setCfg((c) => ({ ...c, paper: 'A4' }))
+  }, [half, cfg.sheet, cfg.paper])
+
+  const fin = useMemo(() => finalConfig(cfg), [cfg])
+  const p12 = cfg.sheet === 'school' && cfg.parts === 'p12'
+  const max = fin.n1 * fin.p1 + fin.n2 * fin.p2 + fin.n3 * fin.p3
+  const counts = { n1: fin.n1, n2: fin.n2, n3: fin.n3 }
+  const countsOk = [fin.n1, fin.n2, fin.n3].every((v) => Number.isInteger(v) && v >= 0) && fin.n1 <= 50 && fin.n2 <= 10 && fin.n3 <= 20
+  const preview = useMemo(
+    () => (cfg.sheet === 'class' && countsOk && fin.n1 + fin.n2 + fin.n3 > 0 ? sheetPreviewSvg(fin) : ''),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [cfg.sheet, fin.n1, fin.n2, fin.n3, fin.paper, fin.bigBubbles, countsOk],
+  )
+
+  function validate(): string {
+    for (const k of ['n1', 'n2', 'n3'] as (keyof PaperConfig)[]) {
       const v = cfg[k] as number
-      if (!Number.isInteger(v) || v < 0) return setError('Số câu mỗi phần phải là số nguyên không âm.')
+      if (!Number.isInteger(v) || v < 0) return 'Số câu mỗi phần phải là số nguyên không âm.'
     }
     if (cfg.sheet === 'school') {
       const L = SCHOOL_LIMITS
-      if (cfg.n1 > L.n1 || cfg.n2 > L.n2 || cfg.n3 > L.n3)
-        return setError(`Phiếu của trường có tối đa ${L.n1} câu Phần I, ${L.n2} câu Phần II, ${L.n3} câu Phần III.`)
+      if (fin.n1 > L.n1 || fin.n2 > L.n2 || fin.n3 > L.n3)
+        return `Phiếu của trường có tối đa ${L.n1} câu Phần I, ${L.n2} câu Phần II, ${L.n3} câu Phần III.`
     } else if (cfg.sheet === 'grid35') {
       if (cfg.n1 > GRID35_LIMITS.n1 || cfg.n2 || cfg.n3)
-        return setError(`Phiếu 35 câu chỉ có phần trắc nghiệm A–D: tối đa ${GRID35_LIMITS.n1} câu Phần 1, Phần 2 và Phần 3 phải bằng 0.`)
-    } else if (cfg.n1 > 50 || cfg.n2 > 10 || cfg.n3 > 20) return setError('Tối đa 50 câu Phần 1, 10 câu Phần 2, 20 câu Phần 3.')
-    if (cfg.n1 + cfg.n2 + cfg.n3 === 0) return setError('Đề phải có ít nhất 1 câu.')
+        return `Phiếu 35 câu chỉ có phần trắc nghiệm A–D: tối đa ${GRID35_LIMITS.n1} câu Phần 1, Phần 2 và Phần 3 phải bằng 0.`
+    } else if (cfg.n1 > 50 || cfg.n2 > 10 || cfg.n3 > 20) return 'Tối đa 50 câu Phần 1, 10 câu Phần 2, 20 câu Phần 3.'
+    if (fin.n1 + fin.n2 + fin.n3 === 0) return p12 ? 'Phần I và Phần II phải có ít nhất 1 câu.' : 'Đề phải có ít nhất 1 câu.'
     for (const k of ['p1', 'p2', 'p3'] as (keyof PaperConfig)[]) {
       const v = cfg[k] as number
-      if (!Number.isFinite(v) || v < 0) return setError('Điểm mỗi câu phải là số không âm.')
+      if (!Number.isFinite(v) || v < 0) return 'Điểm mỗi câu phải là số không âm.'
     }
-    // Phiếu trường: nhận diện bằng phách; phiếu lớp: bằng họ tên, khổ giấy chọn tự động theo số câu
-    const finalCfg: PaperConfig =
-      cfg.sheet === 'school' || cfg.sheet === 'grid35'
-        ? { ...cfg, identity: 'phach', paper: undefined }
-        : { ...cfg, sheet: 'class', identity: 'name', paper: autoPaperSize(cfg) }
+    return ''
+  }
+
+  async function create(e: FormEvent) {
+    e.preventDefault()
+    setError('')
+    const err = validate()
+    if (err) return setError(err)
     setSaving(true)
-    const { data, error: err } = await supabase
+    const { data, error: dbErr } = await supabase
       .from('paper_batches')
-      .insert({ title: title.trim(), class_id: classId || null, config: finalCfg, teacher_id: teacher!.id })
+      .insert({ title: title.trim(), class_id: classId || null, config: fin, teacher_id: teacher!.id })
       .select('id')
       .single()
     setSaving(false)
-    if (err) return setError(err.message)
+    if (dbErr) return setError(dbErr.message)
     navigate(`/cham-phieu/${data.id}`)
+  }
+
+  async function pdf(c: PaperConfig, t: string, key: string) {
+    setPdfBusy(key)
+    try {
+      await downloadSheetPdf(c, t || 'Phiếu trả lời')
+    } catch (e) {
+      alert((e as Error).message)
+    } finally {
+      setPdfBusy('')
+    }
   }
 
   async function remove(b: BatchRow) {
@@ -96,25 +160,44 @@ export default function TeacherPaperGrading() {
     load()
   }
 
-  const max = cfg.n1 * cfg.p1 + cfg.n2 * cfg.p2 + cfg.n3 * cfg.p3
+  const pickSheet = (k: SheetKind) =>
+    setCfg((c) =>
+      k === 'school'
+        ? { ...c, sheet: k, n1: Math.min(c.n1, SCHOOL_LIMITS.n1), n2: Math.min(c.n2, SCHOOL_LIMITS.n2), n3: Math.min(c.n3, SCHOOL_LIMITS.n3) }
+        : k === 'grid35'
+          ? { ...c, sheet: k, n1: GRID35_LIMITS.n1, n2: 0, n3: 0, p1: 0.2 }
+          : { ...c, sheet: k, n2: c.sheet === 'grid35' ? DEFAULT_CONFIG.n2 : c.n2, n3: c.sheet === 'grid35' ? DEFAULT_CONFIG.n3 : c.n3 },
+    )
 
   return (
     <div className="container">
-      <h1>📷 Chấm phiếu trả lời giấy</h1>
-      <p style={{ color: 'var(--muted)' }}>
-        Chụp ảnh, scan (PDF) hoặc bật camera để chấm phiếu tô ô. Phần I, II đọc ô tô bằng xử lý ảnh (không đoán); mã đề, phách, họ
-        tên và đáp số Phần III viết tay do AI đọc 2 lần đối chiếu. Ô nào chưa chắc đều tô vàng để cô quyết.
-      </p>
+      <div className="page-head">
+        <div>
+          <h1>📷 Chấm phiếu trả lời</h1>
+          <p className="sub">
+            Chụp ảnh, scan (PDF) hoặc bật camera để chấm phiếu tô ô. Phần I, II đọc ô tô bằng xử lý ảnh (không đoán); mã đề, phách, họ tên
+            và đáp số Phần III viết tay do AI đọc 2 lần đối chiếu. Ô nào chưa chắc đều tô vàng để cô quyết.
+          </p>
+        </div>
+      </div>
 
-      <div className="card">
-        <h2>Tạo đợt chấm mới</h2>
-        <form onSubmit={create}>
-          <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
-            <div style={{ flex: 2, minWidth: 220 }}>
+      <form className="card" onSubmit={create}>
+        <div className="card-title">
+          <span className="num">+</span>
+          <h2>Tạo đợt chấm mới</h2>
+        </div>
+
+        {/* BƯỚC 1 */}
+        <div className="section">
+          <div className="section-title">
+            <span className="num">1</span> Thông tin chung
+          </div>
+          <div className="row">
+            <div style={{ flex: 2 }}>
               <label>Tên đợt chấm</label>
               <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="VD: Kiểm tra giữa kì I – 12A1" required />
             </div>
-            <div style={{ flex: 1, minWidth: 180 }}>
+            <div>
               <label>{cfg.sheet === 'class' ? 'Lớp (để máy khớp họ tên)' : 'Lớp (không bắt buộc)'}</label>
               <select value={classId} onChange={(e) => setClassId(e.target.value)}>
                 <option value="">— Không gắn lớp —</option>
@@ -125,163 +208,245 @@ export default function TeacherPaperGrading() {
                 ))}
               </select>
               {!classes.length && cfg.sheet === 'class' && (
-                <p style={{ fontSize: 12.5, margin: '-8px 0 8px' }}>
+                <p className="small" style={{ margin: '-8px 0 8px' }}>
                   Chưa có lớp — thêm ở <Link to="/cham-phieu/lop">Lớp &amp; học sinh</Link> để máy tự khớp họ tên.
                 </p>
               )}
             </div>
           </div>
+        </div>
 
-          <label>Loại phiếu trả lời</label>
-          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 8 }}>
-            {(
-              [
-                ['class', '📝 Phiếu tô ô do web tạo', 'Bài kiểm tra tại lớp: đúng số câu của đề, có Họ tên – STT – Lớp – Mã đề. In từ trang đợt chấm.'],
-                ['school', '🏫 Phiếu của trường (đã cắt phách)', 'Phiếu in sẵn 40 – 6 – 8 câu của trường; nhận diện bài bằng Mã phách + Số phách.'],
-                [
-                  'grid35',
-                  '🔤 Phiếu 35 câu (chữ A B C D trong ô)',
-                  'Phiếu in sẵn 35 câu trắc nghiệm 4 cột (VD Tiếng Anh – Part A), không có ô vuông đen; có Mã đề thi + Mã phách. Chỉ chấm phần trắc nghiệm.',
-                ],
-              ] as [SheetKind, string, string][]
-            ).map(([k, label, desc]) => (
-              <label
-                key={k}
-                style={{
-                  flex: 1,
-                  minWidth: 240,
-                  margin: 0,
-                  padding: '10px 12px',
-                  borderRadius: 10,
-                  cursor: 'pointer',
-                  fontWeight: 400,
-                  border: `2px solid ${cfg.sheet === k ? 'var(--primary)' : 'var(--border)'}`,
-                  background: cfg.sheet === k ? 'var(--primary-light)' : 'transparent',
-                }}
-              >
-                <input
-                  type="radio"
-                  name="sheet"
-                  checked={cfg.sheet === k}
-                  onChange={() =>
-                    setCfg((c) =>
-                      k === 'school'
-                        ? { ...c, sheet: k, n1: Math.min(c.n1, SCHOOL_LIMITS.n1), n2: Math.min(c.n2, SCHOOL_LIMITS.n2), n3: Math.min(c.n3, SCHOOL_LIMITS.n3) }
-                        : k === 'grid35'
-                          ? { ...c, sheet: k, n1: GRID35_LIMITS.n1, n2: 0, n3: 0, p1: 0.2 }
-                          : { ...c, sheet: k },
-                    )
-                  }
-                  style={{ width: 'auto', margin: '0 6px 0 0' }}
-                />
-                <b>{label}</b>
-                <div style={{ fontSize: 12.5, color: 'var(--muted)', marginTop: 2 }}>{desc}</div>
+        {/* BƯỚC 2 */}
+        <div className="section">
+          <div className="section-title">
+            <span className="num">2</span> Loại phiếu {cfg.sheet === 'class' ? '& khổ giấy' : cfg.sheet === 'school' ? '& phạm vi chấm' : ''}
+          </div>
+          <div className="choice-grid">
+            {SHEETS.map(([k, ico, label, desc]) => (
+              <label key={k} className={`choice ${cfg.sheet === k ? 'on' : ''}`}>
+                <input type="radio" name="sheet" checked={cfg.sheet === k} onChange={() => pickSheet(k)} />
+                <span className="ico">{ico}</span>
+                <span>
+                  <span className="t">{label}</span>
+                  <span className="d">{desc}</span>
+                </span>
+                <span className="tick">✓</span>
               </label>
             ))}
           </div>
+
           {cfg.sheet === 'class' && (
-            <p style={{ fontSize: 12.5, color: 'var(--muted)', margin: '0 0 6px' }}>
-              Khổ phiếu: {autoPaperSize(cfg) === 'A5' ? 'nửa trang A4 (in 2 phiếu/tờ, cắt đôi)' : 'cả trang A4'} — tự chọn theo số câu.
-            </p>
+            <div className="print-box">
+              <div>
+                <label>Khổ phiếu</label>
+                <div className="choice-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))' }}>
+                  <label className={`choice mini ${cfg.paper === 'A5' ? 'on' : ''} ${half ? '' : 'disabled'}`} title={half ? '' : 'Đề quá dài, không vừa nửa trang A4'}>
+                    <input type="radio" name="paper" disabled={!half} checked={cfg.paper === 'A5'} onChange={() => setCfg((c) => ({ ...c, paper: 'A5' }))} />
+                    <span className="ico">✂️</span>
+                    <span>
+                      <span className="t">Nửa trang A4</span>
+                      <span className="d">{half ? 'In 2 phiếu/tờ A4 rồi cắt đôi — tiết kiệm giấy.' : 'Đề quá dài, không vừa nửa trang.'}</span>
+                    </span>
+                    <span className="tick">✓</span>
+                  </label>
+                  <label className={`choice mini ${cfg.paper !== 'A5' ? 'on' : ''}`}>
+                    <input type="radio" name="paper" checked={cfg.paper !== 'A5'} onChange={() => setCfg((c) => ({ ...c, paper: 'A4' }))} />
+                    <span className="ico">📄</span>
+                    <span>
+                      <span className="t">1 trang A4</span>
+                      <span className="d">1 phiếu/tờ, ô tô lớn, rộng rãi, dễ nhìn.</span>
+                    </span>
+                    <span className="tick">✓</span>
+                  </label>
+                </div>
+                <p className="small muted" style={{ margin: '0 0 10px' }}>
+                  Phiếu sẽ in: <b>{describeClassPaper(counts, fin.paper, fin.bigBubbles)}</b>. Máy quét dùng đúng bố cục này nên phiếu in ra
+                  luôn khớp. Có thể tải phiếu ngay bây giờ hoặc ở trang đợt chấm.
+                </p>
+                <div className="toolbar">
+                  <button type="button" className="btn accent" disabled={!preview || pdfBusy === 'new'} onClick={() => pdf(fin, title, 'new')}>
+                    <span className="ico">⬇</span> {pdfBusy === 'new' ? 'Đang tạo PDF…' : 'Tải phiếu (PDF)'}
+                  </button>
+                  <button type="button" className="btn secondary" disabled={!preview} onClick={() => openPrintSheets(fin, title || 'Phiếu trả lời')}>
+                    <span className="ico">🖨</span> In phiếu
+                  </button>
+                </div>
+              </div>
+              <div className="sheet-preview">
+                <p className="small muted" style={{ margin: '0 0 6px', textAlign: 'center' }}>
+                  Xem trước {fin.paper === 'A5' ? '(1 trong 2 phiếu trên tờ A4)' : ''}
+                </p>
+                {preview ? (
+                  <div className="paper" dangerouslySetInnerHTML={{ __html: preview }} />
+                ) : (
+                  <p className="small muted" style={{ textAlign: 'center' }}>
+                    Nhập số câu hợp lệ để xem trước.
+                  </p>
+                )}
+              </div>
+            </div>
           )}
 
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', gap: 12, marginTop: 4 }}>
+          {cfg.sheet === 'school' && (
+            <>
+              <label>Phạm vi chấm</label>
+              <div className="choice-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))' }}>
+                <label className={`choice mini ${p12 ? 'on' : ''}`}>
+                  <input type="radio" name="parts" checked={p12} onChange={() => setCfg((c) => ({ ...c, parts: 'p12' }))} />
+                  <span className="ico">Ⅰ Ⅱ</span>
+                  <span>
+                    <span className="t">Chỉ chấm Phần I và Phần II</span>
+                    <span className="d">Bỏ qua hoàn toàn Phần III: không đọc, không báo trống, không tính điểm.</span>
+                  </span>
+                  <span className="tick">✓</span>
+                </label>
+                <label className={`choice mini ${!p12 ? 'on' : ''}`}>
+                  <input type="radio" name="parts" checked={!p12} onChange={() => setCfg((c) => ({ ...c, parts: 'all', n3: c.n3 || 6 }))} />
+                  <span className="ico">Ⅰ Ⅱ Ⅲ</span>
+                  <span>
+                    <span className="t">Chấm cả 3 phần</span>
+                    <span className="d">Phần III (trả lời ngắn) viết tay, AI đọc 2 lần đối chiếu.</span>
+                  </span>
+                  <span className="tick">✓</span>
+                </label>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* BƯỚC 3 */}
+        <div className="section">
+          <div className="section-title">
+            <span className="num">3</span> Cấu trúc đề & thang điểm
+          </div>
+          <div className="field-grid">
             <div>
-              <label>Phần 1 – số câu</label>
+              <label>Phần I – số câu</label>
               <input type="number" min={0} value={cfg.n1} onChange={(e) => num('n1', e.target.value)} />
             </div>
             <div>
-              <label>Phần 1 – điểm/câu</label>
+              <label>Phần I – điểm/câu</label>
               <input type="number" step="0.05" min={0} value={cfg.p1} onChange={(e) => num('p1', e.target.value)} />
             </div>
             <div>
-              <label>Phần 2 – số câu</label>
+              <label>Phần II – số câu</label>
               <input type="number" min={0} value={cfg.n2} disabled={cfg.sheet === 'grid35'} onChange={(e) => num('n2', e.target.value)} />
             </div>
             <div>
-              <label>Phần 2 – điểm tối đa/câu</label>
-              <input type="number" step="0.05" min={0} value={cfg.p2} onChange={(e) => num('p2', e.target.value)} />
+              <label>Phần II – điểm/câu</label>
+              <input type="number" step="0.05" min={0} value={cfg.p2} disabled={cfg.sheet === 'grid35'} onChange={(e) => num('p2', e.target.value)} />
             </div>
-            <div>
-              <label>Phần 3 – số câu</label>
-              <input type="number" min={0} value={cfg.n3} disabled={cfg.sheet === 'grid35'} onChange={(e) => num('n3', e.target.value)} />
-            </div>
-            <div>
-              <label>Phần 3 – điểm/câu</label>
-              <input type="number" step="0.05" min={0} value={cfg.p3} onChange={(e) => num('p3', e.target.value)} />
-            </div>
+            {!p12 ? (
+              <>
+                <div>
+                  <label>Phần III – số câu</label>
+                  <input type="number" min={0} value={cfg.n3} disabled={cfg.sheet === 'grid35'} onChange={(e) => num('n3', e.target.value)} />
+                </div>
+                <div>
+                  <label>Phần III – điểm/câu</label>
+                  <input type="number" step="0.05" min={0} value={cfg.p3} disabled={cfg.sheet === 'grid35'} onChange={(e) => num('p3', e.target.value)} />
+                </div>
+              </>
+            ) : (
+              <div style={{ gridColumn: 'span 2', alignSelf: 'center' }}>
+                <span className="badge gray">Phần III: không chấm</span>
+              </div>
+            )}
           </div>
-          <label>Cách tính điểm Phần 2</label>
-          <select value={cfg.tfMethod} onChange={(e) => setCfg((c) => ({ ...c, tfMethod: e.target.value as PaperConfig['tfMethod'] }))}>
-            <option value="ministry_partial">Theo Bộ GDĐT: đúng 1 ý = 10%, 2 ý = 25%, 3 ý = 50%, 4 ý = 100% điểm câu</option>
-            <option value="equal_split">Chia đều: mỗi ý đúng = 25% điểm câu</option>
-          </select>
-          <p style={{ margin: '6px 0 12px' }}>
-            Tổng điểm tối đa: <b>{Math.round(max * 100) / 100}</b>
-            {Math.abs(max - 10) > 1e-9 && <span className="badge warn" style={{ marginLeft: 8 }}>Chưa phải thang 10</span>}
-          </p>
-          <button className="btn" type="submit" disabled={saving}>
-            {saving ? 'Đang tạo…' : 'Tạo đợt chấm'}
-          </button>
-        </form>
-        {error && <p style={{ color: 'var(--danger)', whiteSpace: 'pre-line' }}>{error}</p>}
-      </div>
+          {cfg.n2 > 0 && cfg.sheet !== 'grid35' && (
+            <>
+              <label>Cách tính điểm Phần II</label>
+              <select value={cfg.tfMethod} onChange={(e) => setCfg((c) => ({ ...c, tfMethod: e.target.value as PaperConfig['tfMethod'] }))}>
+                <option value="ministry_partial">Theo Bộ GDĐT: đúng 1 ý = 10%, 2 ý = 25%, 3 ý = 50%, 4 ý = 100% điểm câu</option>
+                <option value="equal_split">Chia đều: mỗi ý đúng = 25% điểm câu</option>
+              </select>
+            </>
+          )}
+          <div className="toolbar" style={{ justifyContent: 'space-between' }}>
+            <span>
+              Tổng điểm tối đa: <b style={{ fontSize: 18, color: 'var(--primary-dark)' }}>{Math.round(max * 100) / 100}</b>
+              {Math.abs(max - 10) > 1e-9 ? (
+                <span className="badge warn" style={{ marginLeft: 8 }}>
+                  Chưa phải thang 10
+                </span>
+              ) : (
+                <span className="badge ok" style={{ marginLeft: 8 }}>
+                  ✓ Thang 10
+                </span>
+              )}
+            </span>
+            <button className="btn lg" type="submit" disabled={saving}>
+              {saving ? 'Đang tạo…' : 'Tạo đợt chấm →'}
+            </button>
+          </div>
+        </div>
+        {error && <div className="notice err">{error}</div>}
+      </form>
 
       <div className="card">
-        <h2>Các đợt chấm</h2>
+        <div className="card-title">
+          <h2>Các đợt chấm</h2>
+          <span className="badge gray">{batches.length}</span>
+        </div>
         {loading ? (
           <p>Đang tải…</p>
         ) : (
-          <table className="list">
-            <thead>
-              <tr>
-                <th>Tên đợt</th>
-                <th>Lớp</th>
-                <th>Phiếu</th>
-                <th>Cấu trúc</th>
-                <th>Ngày tạo</th>
-                <th></th>
-              </tr>
-            </thead>
-            <tbody>
-              {batches.map((b) => (
-                <tr key={b.id}>
-                  <td>
-                    <Link to={`/cham-phieu/${b.id}`}>{b.title}</Link>
-                  </td>
-                  <td>{classes.find((c) => c.id === b.class_id)?.class_name || '—'}</td>
-                  <td>
-                    {b.config.sheet === 'school'
-                      ? 'Trường (phách)'
-                      : b.config.sheet === 'grid35'
-                        ? '35 câu (phách)'
-                        : b.config.sheet === 'class'
-                          ? 'Tô ô – lớp'
-                          : 'Viết tay (cũ)'}
-                  </td>
-                  <td>
-                    {b.config.n1} – {b.config.n2} – {b.config.n3}
-                  </td>
-                  <td>{new Date(b.created_at).toLocaleDateString('vi-VN')}</td>
-                  <td>
-                    <Link to={`/cham-phieu/${b.id}`} style={{ marginRight: 12 }}>
-                      Mở →
-                    </Link>
-                    <button className="btn danger" style={{ padding: '3px 10px', fontSize: 12 }} onClick={() => remove(b)}>
-                      Xoá
-                    </button>
-                  </td>
-                </tr>
-              ))}
-              {batches.length === 0 && (
+          <div className="table-wrap">
+            <table className="list">
+              <thead>
                 <tr>
-                  <td colSpan={6} style={{ color: 'var(--muted)' }}>
-                    Chưa có đợt chấm nào.
-                  </td>
+                  <th>Tên đợt</th>
+                  <th className="hide-sm">Lớp</th>
+                  <th>Phiếu</th>
+                  <th className="hide-sm">Cấu trúc</th>
+                  <th className="hide-sm">Ngày tạo</th>
+                  <th></th>
                 </tr>
-              )}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {batches.map((b) => (
+                  <tr key={b.id}>
+                    <td>
+                      <Link to={`/cham-phieu/${b.id}`}>{b.title}</Link>
+                    </td>
+                    <td className="hide-sm">{classes.find((c) => c.id === b.class_id)?.class_name || '—'}</td>
+                    <td>
+                      <span className="badge gray">{sheetLabel(b.config)}</span>
+                    </td>
+                    <td className="hide-sm">
+                      {b.config.n1} – {b.config.n2} – {b.config.parts === 'p12' ? '✕' : b.config.n3}
+                    </td>
+                    <td className="hide-sm">{new Date(b.created_at).toLocaleDateString('vi-VN')}</td>
+                    <td style={{ whiteSpace: 'nowrap', textAlign: 'right' }}>
+                      {b.config.sheet === 'class' && (
+                        <button
+                          className="btn ghost sm"
+                          title="Tải mẫu phiếu (PDF)"
+                          disabled={pdfBusy === b.id}
+                          onClick={() => pdf(b.config, b.title, b.id)}
+                        >
+                          {pdfBusy === b.id ? '…' : '⬇ Phiếu'}
+                        </button>
+                      )}
+                      <Link className="btn secondary sm" to={`/cham-phieu/${b.id}`} style={{ margin: '0 6px' }}>
+                        Mở →
+                      </Link>
+                      <button className="btn danger soft sm" onClick={() => remove(b)}>
+                        Xoá
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+                {batches.length === 0 && (
+                  <tr>
+                    <td colSpan={6} className="muted">
+                      Chưa có đợt chấm nào.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
         )}
       </div>
     </div>

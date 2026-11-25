@@ -112,14 +112,15 @@ export default function CameraCapture({ onCapture, onClose, continuous = true }:
             />
           </div>
           <p style={{ color: 'white', fontSize: 13, margin: '8px 0', textAlign: 'center' }}>
-            Đặt phiếu phẳng, đủ sáng, cả 3 bảng nằm trong khung nét đứt. Đã chụp: <b>{count}</b> phiếu
+            Đặt phiếu phẳng, đủ sáng, cầm máy song song mặt giấy; thấy đủ các ô vuông đen ■ ở góc phiếu (phiếu viết tay: cả 3 bảng) trong
+            khung nét đứt. Đã chụp: <b>{count}</b> phiếu
           </p>
-          <div style={{ display: 'flex', gap: 12 }}>
-            <button className="btn accent" style={{ fontSize: 17, padding: '12px 28px' }} onClick={capture}>
+          <div style={{ display: 'flex', gap: 12, alignItems: 'center' }}>
+            <button className="btn accent" style={{ fontSize: 18, padding: '14px 34px' }} onClick={capture} aria-label="Chụp phiếu">
               📸 Chụp
             </button>
             <button className="btn secondary" onClick={onClose}>
-              Xong
+              ✓ Xong
             </button>
           </div>
         </>

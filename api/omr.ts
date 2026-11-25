@@ -102,6 +102,22 @@ CHỈ TRẢ VỀ JSON:
   KHÔNG đọc Điểm TN, Điểm TL, Tổng điểm, Số tờ.`
       : `- PHẦN TRÊN: hàng ô "Họ và tên", "STT", "Lớp", "Mã đề" (học sinh viết tay). Đọc lần lượt -> ho_ten, stt, lop, ma_de.
   Họ tên tiếng Việt: chép đủ dấu, viết hoa chữ cái đầu mỗi từ.`
+  // Đợt chấm không chấm Phần III (n3 = 0): ảnh chỉ còn phần đầu phiếu, không nhắc gì tới Phần III
+  if (n3 === 0)
+    return `Bạn là máy đọc chữ viết tay trên phiếu trả lời trắc nghiệm (THPT Việt Nam).
+Ảnh là PHẦN ĐẦU phiếu đã cắt và nắn thẳng. Nhiệm vụ DUY NHẤT: chép lại CHÍNH XÁC chữ/số viết tay. KHÔNG đoán, KHÔNG tự sửa.
+
+${header}
+- KHÔNG đọc Phần III (đợt chấm này không chấm Phần III) — luôn trả "p3": [].
+
+QUY TẮC
+1. Chú ý phân biệt 1 và 7, 4 và 9, 0 và 6, 5 và S, 2 và Z.
+2. Có gạch xoá rồi viết lại: lấy phần viết sau cùng (không bị gạch).
+3. Chữ in sẵn trên phiếu (nhãn, dấu chấm) không phải bài làm.
+4. Ô bạn không chắc ≥ 95% phải có trong "uncertain" theo mã: "MA_DE", "MA_PHACH", "SO_PHACH", "HO_TEN", "STT", "LOP".
+
+CHỈ TRẢ VỀ JSON:
+{"ma_de":"","ma_phach":"","so_phach":"","ho_ten":"","stt":"","lop":"","p3":[],"uncertain":[],"ghi_chu":""}`
   const p3 =
     kind === 'school'
       ? `- PHẦN DƯỚI: "PHẦN III." với dòng "Câu 1. ...... Câu 2. ...... … Câu 8. ......": đáp số viết tay trên dòng chấm ngay SAU chữ "Câu k." là đáp án câu k.`

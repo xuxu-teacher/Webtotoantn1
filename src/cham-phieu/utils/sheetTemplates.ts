@@ -4,6 +4,7 @@
  *    có 6 ô vuông đen ■ quanh Phần I). Toạ độ đo từ phiếu thật, đơn vị: mốc trên-trái (0,0),
  *    mốc trên-phải (1000,0). Phiếu chỉ cần chụp — không cần in đúng kích cỡ.
  *  - 'class': phiếu do web tạo cho bài kiểm tra tại lớp, đúng số câu của đề. Đơn vị: mm trên giấy.
+ *    Khổ: nửa trang A4 (2 phiếu/tờ) hoặc 1 trang A4 (ô tô lớn) — giáo viên chọn khi tạo đợt.
  */
 import type { BubbleRow, Pt, SheetTemplate } from './bubbleOmr'
 
@@ -80,8 +81,15 @@ export type Draw =
   | { t: 'text'; x: number; y: number; s: string; size: number; bold?: boolean; anchor?: 'start' | 'middle' | 'end' }
   | { t: 'line'; x1: number; y1: number; x2: number; y2: number; sw?: number; dash?: boolean }
 
+/**
+ * Kiểu bố cục: 'std' = chuẩn (như các phiếu đã in trước đây), 'big' = ô to (1 trang A4),
+ * 'xl' = ô rất to (đề ngắn, 1 trang A4), 'compact' = gọn (đề rất dài)
+ */
+export type ClassStyle = 'std' | 'big' | 'xl' | 'compact'
+
 export interface ClassLayout {
   size: PaperSize
+  style: ClassStyle
   width: number
   height: number
   template: SheetTemplate
@@ -92,9 +100,31 @@ export interface ClassLayout {
 const PAGE_W = 210
 const M = 9 // lề tới tâm mốc
 const MK = 5 // cạnh mốc
-const BR = 2.2 // bán kính ô tô (đường kính 4.4 mm)
-const DX = 6.2 // khoảng cách ngang giữa các ô A-B-C-D
-const DY = 5.6 // khoảng cách hàng
+
+interface Dims {
+  BR: number // bán kính ô tô
+  DX: number // khoảng cách ngang giữa các ô A-B-C-D
+  DY: number // khoảng cách hàng
+  LBL: number // bề rộng nhãn số câu Phần I
+  P2W: number // bề rộng khung một câu Phần II
+  xD: number // vị trí ô Đúng trong khung Phần II
+  xS: number // vị trí ô Sai
+  P3H: number // chiều cao ô ghi đáp số Phần III
+  P3STEP: number // khoảng cách hàng ô Phần III
+  BOXH: number // chiều cao khung thông tin
+  fs: number // hệ số cỡ chữ
+}
+
+/** 'std' giữ NGUYÊN số đo cũ để các phiếu đã in trước đây vẫn quét được */
+const DIMS: Record<ClassStyle, Dims> = {
+  std: { BR: 2.2, DX: 6.2, DY: 5.6, LBL: 8, P2W: 23.5, xD: 10.2, xS: 17.6, P3H: 10, P3STEP: 17, BOXH: 13, fs: 1 },
+  big: { BR: 2.6, DX: 7.3, DY: 6.7, LBL: 9, P2W: 27.5, xD: 11.8, xS: 20.4, P3H: 12, P3STEP: 19.5, BOXH: 15, fs: 1.13 },
+  xl: { BR: 3.0, DX: 8.6, DY: 7.9, LBL: 10.5, P2W: 32, xD: 13.8, xS: 23.8, P3H: 14, P3STEP: 22.5, BOXH: 17, fs: 1.3 },
+  compact: { BR: 2.0, DX: 5.6, DY: 4.9, LBL: 7.5, P2W: 21.5, xD: 9.4, xS: 16, P3H: 9, P3STEP: 14.5, BOXH: 12, fs: 0.95 },
+}
+
+/** Toạ độ y lớn nhất nội dung được phép chạm tới (chừa mốc ■ dưới) */
+const bottomLimit = (pageH: number) => pageH - M - MK / 2 - 3
 
 /** Chia Phần I thành các cột (tối đa 10 câu/cột, tối đa 5 cột/dải) */
 function p1Columns(n1: number): number[][] {
@@ -110,18 +140,52 @@ function p1Columns(n1: number): number[][] {
   return out
 }
 
-/** Tự chọn khổ: phiếu vừa nửa trang A4 thì in 2 phiếu/tờ (khổ A5 ngang = nửa A4) */
-export function autoPaperSize(c: ClassCounts): PaperSize {
-  return classLayout(c, 'A4').contentBottom <= 148.5 - M - MK / 2 - 3 ? 'A5' : 'A4'
+/** Phiếu (bố cục chuẩn) có vừa nửa trang A4 (in 2 phiếu/tờ) không */
+export function fitsHalfA4(c: ClassCounts): boolean {
+  return buildClassLayout(c, 'A5', 'std').contentBottom <= bottomLimit(148.5)
 }
 
-export function classLayout(c: ClassCounts, size?: PaperSize): ClassLayout {
-  if (!size) size = autoPaperSize(c)
+/** Tự chọn khổ (đợt chấm cũ chưa lưu khổ): vừa nửa trang thì in 2 phiếu/tờ */
+export function autoPaperSize(c: ClassCounts): PaperSize {
+  return fitsHalfA4(c) ? 'A5' : 'A4'
+}
+
+/**
+ * Khổ + kiểu bố cục THỰC SỰ dùng cho một đợt chấm. Dùng chung cho lúc in và lúc quét nên phiếu in ra luôn khớp mẫu quét.
+ *  - paper 'A5' (nửa trang): chỉ khi vừa; không vừa -> 1 trang A4.
+ *  - paper 'A4' + big: ô to nếu vừa trang, không vừa -> chuẩn -> gọn.
+ *  - không lưu paper (đợt chấm cũ): tự chọn như trước.
+ */
+export function resolveClassPaper(c: ClassCounts, paper?: PaperSize, big?: boolean): { size: PaperSize; style: ClassStyle } {
+  const half = fitsHalfA4(c)
+  if ((paper === 'A5' || paper === undefined) && half) return { size: 'A5', style: 'std' }
+  const lim = bottomLimit(297)
+  // 1 trang A4: ô càng to càng tốt, miễn vừa trang
+  if (big && buildClassLayout(c, 'A4', 'xl').contentBottom <= lim) return { size: 'A4', style: 'xl' }
+  if (big && buildClassLayout(c, 'A4', 'big').contentBottom <= lim) return { size: 'A4', style: 'big' }
+  if (buildClassLayout(c, 'A4', 'std').contentBottom <= lim) return { size: 'A4', style: 'std' }
+  return { size: 'A4', style: 'compact' }
+}
+
+export function classLayout(c: ClassCounts, size?: PaperSize, big?: boolean): ClassLayout {
+  const r = resolveClassPaper(c, size, big)
+  return buildClassLayout(c, r.size, r.style)
+}
+
+/** Bố cục theo đúng khổ + kiểu chỉ định (không tự đổi) — dùng để nhận ra phiếu in nhầm khổ */
+export function buildClassLayoutFor(c: ClassCounts, size: PaperSize, style: ClassStyle): ClassLayout {
+  return buildClassLayout(c, size, style)
+}
+
+function buildClassLayout(c: ClassCounts, size: PaperSize, style: ClassStyle): ClassLayout {
+  const D = DIMS[style]
+  const { BR, DX, DY, fs } = D
   const W = PAGE_W
   const Hh = size === 'A5' ? 148.5 : 297
   const draws: Draw[] = []
   const rows: BubbleRow[] = []
   const crops: SheetTemplate['crops'] = []
+  const p3Boxes: NonNullable<SheetTemplate['p3Boxes']> = []
 
   // 4 mốc góc + 1 mốc phụ cạnh mốc trên-trái (xác định chiều phiếu)
   const corners: [Pt, Pt, Pt, Pt] = [
@@ -148,11 +212,12 @@ export function classLayout(c: ClassCounts, size?: PaperSize): ClassLayout {
   const R = W - M - 6
   let y = M + 6
 
-  draws.push({ t: 'text', x: W / 2, y: y + 1, s: 'PHIẾU TRẢ LỜI TRẮC NGHIỆM', size: 4.6, bold: true, anchor: 'middle' })
-  y += 6
+  // chữ to hơn (fs > 1) thì hạ tiêu đề xuống để không sát dãy ô mã cấu trúc
+  draws.push({ t: 'text', x: W / 2, y: y + 1 + (fs - 1) * 6, s: 'PHIẾU TRẢ LỜI TRẮC NGHIỆM', size: 4.6 * fs, bold: true, anchor: 'middle' })
+  y += 6 + Math.max(0, fs - 1) * 6
 
   // Khung thông tin
-  const boxH = 13
+  const boxH = D.BOXH
   const fields: { label: string; w: number }[] = [
     { label: 'Họ và tên:', w: 0.47 },
     { label: 'STT:', w: 0.13 },
@@ -164,47 +229,50 @@ export function classLayout(c: ClassCounts, size?: PaperSize): ClassLayout {
   for (const f of fields) {
     const fw = fullW * f.w
     draws.push({ t: 'rect', x: fx, y, w: fw, h: boxH, sw: 0.3 })
-    draws.push({ t: 'text', x: fx + 1.5, y: y + 3.6, s: f.label, size: 3, bold: true })
+    draws.push({ t: 'text', x: fx + 1.5, y: y + 3.6 * fs, s: f.label, size: 3 * fs, bold: true })
     fx += fw
   }
   crops.push({ id: 'header', x: L - 2, y: y - 1, w: fullW + 4, h: boxH + 2 })
   y += boxH + 4
 
   // PHẦN I & PHẦN II — đặt cạnh nhau nếu đủ chỗ (phiếu gọn, vừa nửa trang A4)
-  const P1_COLW = 8 + 4 * DX + 1.5 // nhãn câu + 4 ô
+  const P1_COLW = D.LBL + 4 * DX + 1.5 // nhãn câu + 4 ô
   const P1_GAP = 3
-  const P2_BOXW = 23.5
+  const P2_BOXW = D.P2W
+  const HEAD = 6 * fs // dòng chữ A B C D đầu cột
   const cols = p1Columns(c.n1)
   const rowsPer = cols.length ? Math.max(...cols.map((q) => q.length)) : 0
   const p1PerBand = Math.max(1, Math.floor((fullW + P1_GAP) / (P1_COLW + P1_GAP)))
   const p1Bands: number[][][] = []
   for (let b = 0; b * p1PerBand < cols.length; b++) p1Bands.push(cols.slice(b * p1PerBand, (b + 1) * p1PerBand))
-  const p1BandH = 6 + rowsPer * DY + 1
+  const p1BandH = HEAD + rowsPer * DY + 1
   const p1W = p1Bands.length ? Math.max(...p1Bands.map((b) => b.length)) * (P1_COLW + P1_GAP) - P1_GAP : 0
   const p1H = p1Bands.length ? p1Bands.length * (p1BandH + 2) - 2 : 0
   const p2PerRow = Math.max(1, Math.floor((fullW + 1) / P2_BOXW))
-  const p2BoxH = 8 + 4 * DY + 1
+  const P2HEAD = 8 * fs
+  const p2BoxH = P2HEAD + 4 * DY + 1
   const p2Rows = Math.ceil(c.n2 / p2PerRow)
   const p2W = c.n2 ? Math.min(c.n2, p2PerRow) * P2_BOXW - 1 : 0
   const p2H = c.n2 ? p2Rows * (p2BoxH + 2) - 2 : 0
   const side = c.n1 > 0 && c.n2 > 0 && p1Bands.length === 1 && p2Rows === 1 && p1W + 6 + p2W <= fullW
+  const T1 = 4.5 * fs // khoảng tiêu đề phần
 
   const drawP1 = (x0: number, y0: number) => {
-    draws.push({ t: 'text', x: x0, y: y0 + 2, s: 'PHẦN I. Tô kín một ô A, B, C hoặc D', size: 3.2, bold: true })
-    let by = y0 + 4.5
+    draws.push({ t: 'text', x: x0, y: y0 + 2 * fs, s: 'PHẦN I. Tô kín một ô A, B, C hoặc D', size: 3.2 * fs, bold: true })
+    let by = y0 + T1
     p1Bands.forEach((band, b) => {
       band.forEach((qs, k) => {
         const gx = x0 + k * (P1_COLW + P1_GAP)
         draws.push({ t: 'rect', x: gx, y: by, w: P1_COLW, h: p1BandH, sw: 0.3 })
         ;['A', 'B', 'C', 'D'].forEach((s2, i) =>
-          draws.push({ t: 'text', x: gx + 8 + i * DX + BR, y: by + 4, s: s2, size: 3.1, bold: true, anchor: 'middle' }),
+          draws.push({ t: 'text', x: gx + D.LBL + i * DX + BR, y: by + 4 * fs, s: s2, size: 3.1 * fs, bold: true, anchor: 'middle' }),
         )
         qs.forEach((q, r) => {
-          const cy = by + 6 + r * DY + DY / 2
-          draws.push({ t: 'text', x: gx + 5.6, y: cy + 1.1, s: String(q), size: 3.1, bold: true, anchor: 'end' })
+          const cy = by + HEAD + r * DY + DY / 2
+          draws.push({ t: 'text', x: gx + D.LBL - 2.4, y: cy + 1.1 * fs, s: String(q), size: 3.1 * fs, bold: true, anchor: 'end' })
           const opts: Pt[] = []
           for (let i = 0; i < 4; i++) {
-            const cx = gx + 8 + i * DX + BR
+            const cx = gx + D.LBL + i * DX + BR
             opts.push({ x: cx, y: cy })
             draws.push({ t: 'circle', x: cx, y: cy, r: BR })
           }
@@ -215,21 +283,21 @@ export function classLayout(c: ClassCounts, size?: PaperSize): ClassLayout {
     })
   }
   const drawP2 = (x0: number, y0: number) => {
-    draws.push({ t: 'text', x: x0, y: y0 + 2, s: 'PHẦN II. Mỗi ý tô một ô Đúng hoặc Sai', size: 3.2, bold: true })
+    draws.push({ t: 'text', x: x0, y: y0 + 2 * fs, s: 'PHẦN II. Mỗi ý tô một ô Đúng hoặc Sai', size: 3.2 * fs, bold: true })
     for (let b = 0; b < p2Rows; b++) {
-      const top = y0 + 4.5 + b * (p2BoxH + 2)
+      const top = y0 + T1 + b * (p2BoxH + 2)
       for (let k = 0; k < p2PerRow && b * p2PerRow + k < c.n2; k++) {
         const q = b * p2PerRow + k + 1
         const bx = x0 + k * P2_BOXW
         draws.push({ t: 'rect', x: bx, y: top, w: P2_BOXW - 1, h: p2BoxH, sw: 0.3 })
-        draws.push({ t: 'text', x: bx + 1.2, y: top + 3.2, s: `Câu ${q}`, size: 2.9, bold: true })
-        const xD = bx + 10.2,
-          xS = bx + 17.6
-        draws.push({ t: 'text', x: xD, y: top + 7, s: 'Đúng', size: 2.4, anchor: 'middle' })
-        draws.push({ t: 'text', x: xS, y: top + 7, s: 'Sai', size: 2.4, anchor: 'middle' })
+        draws.push({ t: 'text', x: bx + 1.2, y: top + 3.2 * fs, s: `Câu ${q}`, size: 2.9 * fs, bold: true })
+        const xD = bx + D.xD,
+          xS = bx + D.xS
+        draws.push({ t: 'text', x: xD, y: top + 7 * fs, s: 'Đúng', size: 2.4 * fs, anchor: 'middle' })
+        draws.push({ t: 'text', x: xS, y: top + 7 * fs, s: 'Sai', size: 2.4 * fs, anchor: 'middle' })
         for (let s2 = 0; s2 < 4; s2++) {
-          const cy = top + 8 + s2 * DY + DY / 2
-          draws.push({ t: 'text', x: bx + 1.8, y: cy + 1, s: `${'abcd'[s2]})`, size: 2.9 })
+          const cy = top + P2HEAD + s2 * DY + DY / 2
+          draws.push({ t: 'text', x: bx + 1.8, y: cy + 1 * fs, s: `${'abcd'[s2]})`, size: 2.9 * fs })
           draws.push({ t: 'circle', x: xD, y: cy, r: BR })
           draws.push({ t: 'circle', x: xS, y: cy, r: BR })
           rows.push({ part: 2, q, sub: s2, block: `p2q${q}`, opts: [{ x: xD, y: cy }, { x: xS, y: cy }] })
@@ -240,22 +308,22 @@ export function classLayout(c: ClassCounts, size?: PaperSize): ClassLayout {
   if (side) {
     drawP1(L, y)
     drawP2(R - p2W, y)
-    y += 4.5 + Math.max(p1H, p2H) + 4
+    y += T1 + Math.max(p1H, p2H) + 4
   } else {
     if (c.n1) {
       drawP1(L, y)
-      y += 4.5 + p1H + 4
+      y += T1 + p1H + 4
     }
     if (c.n2) {
       drawP2(L, y)
-      y += 4.5 + p2H + 4
+      y += T1 + p2H + 4
     }
   }
 
   // PHẦN III (viết tay)
   if (c.n3) {
-    draws.push({ t: 'text', x: L, y: y + 2, s: 'PHẦN III. Ghi đáp số vào ô (số nguyên hoặc số thập phân, dùng dấu phẩy)', size: 3.3, bold: true })
-    y += 5
+    draws.push({ t: 'text', x: L, y: y + 2 * fs, s: 'PHẦN III. Ghi đáp số vào ô (số nguyên hoặc số thập phân, dùng dấu phẩy)', size: 3.3 * fs, bold: true })
+    y += 5 * fs
     const perRow = 8
     const top0 = y
     for (let b = 0; b * perRow < c.n3; b++) {
@@ -263,10 +331,11 @@ export function classLayout(c: ClassCounts, size?: PaperSize): ClassLayout {
       for (let k = 0; k < perRow && b * perRow + k < c.n3; k++) {
         const q = b * perRow + k + 1
         const bx = L + k * boxW
-        draws.push({ t: 'text', x: bx + 1, y: y + 3, s: `Câu ${q}`, size: 2.9, bold: true })
-        draws.push({ t: 'rect', x: bx, y: y + 4.2, w: boxW - 1.5, h: 10, sw: 0.35 })
+        draws.push({ t: 'text', x: bx + 1, y: y + 3 * fs, s: `Câu ${q}`, size: 2.9 * fs, bold: true })
+        draws.push({ t: 'rect', x: bx, y: y + 4.2 * fs, w: boxW - 1.5, h: D.P3H, sw: 0.35 })
+        p3Boxes.push({ q, x: bx, y: y + 4.2 * fs, w: boxW - 1.5, h: D.P3H })
       }
-      y += 17
+      y += D.P3STEP
     }
     crops.push({ id: 'p3', x: L - 2, y: top0 - 1, w: fullW + 4, h: y - top0 + 1 })
   }
@@ -291,9 +360,17 @@ export function classLayout(c: ClassCounts, size?: PaperSize): ClassLayout {
     bubbleR: BR,
     rows,
     crops,
+    p3Boxes,
     frame: { x: 0, y: 0, w: W, h: Hh },
   }
-  return { size, width: W, height: Hh, template, draws, contentBottom: y }
+  return { size, style, width: W, height: Hh, template, draws, contentBottom: y }
+}
+
+/** Mô tả khổ phiếu để hiện cho giáo viên */
+export function describeClassPaper(c: ClassCounts, paper?: PaperSize, big?: boolean): string {
+  const r = resolveClassPaper(c, paper, big)
+  if (r.size === 'A5') return 'Nửa trang A4 (2 phiếu/tờ, cắt đôi)'
+  return r.style === 'xl' || r.style === 'big' ? '1 trang A4 – ô tô lớn' : r.style === 'compact' ? '1 trang A4 – bố cục gọn (đề dài)' : '1 trang A4'
 }
 
 /** SVG một phiếu (đơn vị mm) */

@@ -22,7 +22,12 @@ import {
   fitAnswers,
   invalidShortKeys,
   isBubbleSheet,
+  keyIsComplete,
   KeyTableItem,
+  normalizeConfig,
+  countFlagKinds,
+  flagKind,
+  FLAG_KIND_LABEL,
   matchStudent,
   missingKeyCells,
   nameSimilarity,
@@ -38,8 +43,11 @@ import {
   stripVN,
   tfLabel,
 } from '../utils/omr'
-import { openPrintSheets } from '../utils/printSheets'
-import { GRID35_LIMITS, SCHOOL_LIMITS, autoPaperSize } from '../utils/sheetTemplates'
+import { downloadSheetPdf, openPrintSheets } from '../utils/printSheets'
+import { GRID35_LIMITS, SCHOOL_LIMITS, describeClassPaper, fitsHalfA4 } from '../utils/sheetTemplates'
+import { renderGradedOverlay } from '../utils/overlay'
+import GradedImage from '../components/GradedImage'
+import ResultSummary from '../components/ResultSummary'
 
 // ---------------- KIỂU DỮ LIỆU TRANG ----------------
 
@@ -75,6 +83,8 @@ interface SheetRow {
   /** mã file ảnh phiếu gốc / ảnh máy đọc trong Google Drive của giáo viên */
   image_drive_id?: string | null
   overlay_drive_id?: string | null
+  /** cảnh báo máy đưa ra lúc đọc phiếu (giáo viên đã rà trước khi lưu) */
+  read_flags?: Record<CellId, string> | null
 }
 
 type ItemStatus = 'waiting' | 'reading' | 'review' | 'saved' | 'error'
@@ -185,6 +195,114 @@ function clearChangedFlags(prev: PaperAnswers, next: PaperAnswers, flags: Record
 
 // ======================================================================
 
+/** Xuất Excel kết quả: bảng điểm (không có cột Phần III khi đợt chấm không chấm Phần III), đáp án, tỉ lệ đúng từng câu */
+function exportBatchExcel(batch: Batch, cfg: PaperConfig, keys: KeyRow[], sheets: SheetRow[], roster: StudentLite[]) {
+  const phach = cfg.identity === 'phach'
+  const hasP3 = cfg.n3 > 0
+  const sorted = [...sheets].sort((a, b) =>
+    phach
+      ? normMaPhach(a.ma_phach).localeCompare(normMaPhach(b.ma_phach), 'vi', { numeric: true }) ||
+        normSoPhach(a.so_phach).localeCompare(normSoPhach(b.so_phach), 'vi', { numeric: true })
+      : vnNameCompare(a.student_name, b.student_name),
+  )
+  const missing = phach ? [] : roster.filter((s) => !sheets.some((x) => x.student_id === s.id))
+  const qCols: string[] = []
+  for (let i = 1; i <= cfg.n1; i++) qCols.push(`P1.C${i}`)
+  for (let i = 1; i <= cfg.n2; i++) TF_KEYS.forEach((k) => qCols.push(`P2.C${i}${k}`))
+  for (let i = 1; i <= cfg.n3; i++) qCols.push(`P3.C${i}`)
+
+  const flat = (a: PaperAnswers): string[] => [
+    ...a.p1.map((x) => x || ''),
+    ...a.p2.flatMap((q) => q.map((x) => tfLabel(x))),
+    ...a.p3.map((x) => x || ''),
+  ]
+
+  // Sheet 1: kết quả
+  const head = [
+    'STT',
+    ...(phach ? ['Mã phách', 'Số phách'] : []),
+    'Họ và tên',
+    phach ? 'Lớp' : 'Lớp (phiếu ghi)',
+    'Mã đề',
+    'Điểm P1',
+    'Điểm P2',
+    ...(hasP3 ? ['Điểm P3'] : []),
+    'Tổng điểm',
+    'Số câu đúng',
+    'Số ô sửa tay',
+    ...qCols,
+  ]
+  const rows: (string | number)[][] = [head]
+  sorted.forEach((s, i) => {
+    const key = keys.find((k) => k.ma_de === s.ma_de)
+    const nRight = key ? countRight(scorePaper(s.answers, key.answers, cfg).correct) : ''
+    rows.push([
+      i + 1,
+      ...(phach ? [s.ma_phach || '', s.so_phach || ''] : []),
+      s.student_name,
+      s.class_label || '',
+      s.ma_de,
+      s.part_scores.p1,
+      s.part_scores.p2,
+      ...(hasP3 ? [s.part_scores.p3] : []),
+      s.score,
+      nRight,
+      (s.edited_cells || []).length,
+      ...flat(s.answers),
+    ])
+  })
+  missing.forEach((s) => {
+    const r: (string | number)[] = new Array(head.length - qCols.length).fill('')
+    r[1] = s.full_name
+    r[head.indexOf('Tổng điểm')] = 'Chưa có phiếu'
+    rows.push(r)
+  })
+  const ws1 = XLSX.utils.aoa_to_sheet(rows)
+  ws1['!cols'] = head.slice(0, head.length - qCols.length).map((h) => ({ wch: h === 'Họ và tên' ? 26 : Math.max(8, h.length + 2) }))
+
+  // Sheet 2: đáp án
+  const keyRows: string[][] = [['Mã đề', ...qCols]]
+  keys.forEach((k) => keyRows.push([k.ma_de, ...flat(k.answers)]))
+  const ws2 = XLSX.utils.aoa_to_sheet(keyRows)
+
+  // Sheet 3: tỉ lệ đúng từng câu theo mã đề
+  const statRows: (string | number)[][] = [['Mã đề', 'Câu', 'Số phiếu', 'Số đúng', 'Tỉ lệ đúng (%)']]
+  for (const k of keys) {
+    const group = sheets.filter((s) => s.ma_de === k.ma_de)
+    if (!group.length) continue
+    const results = group.map((s) => scorePaper(s.answers, k.answers, cfg).correct)
+    const ids: [string, CellId][] = []
+    for (let i = 1; i <= cfg.n1; i++) ids.push([`P1.C${i}`, `1.${i}`])
+    for (let i = 1; i <= cfg.n2; i++) TF_KEYS.forEach((t) => ids.push([`P2.C${i}${t}`, `2.${i}${t}`]))
+    for (let i = 1; i <= cfg.n3; i++) ids.push([`P3.C${i}`, `3.${i}`])
+    for (const [label, id] of ids) {
+      const ok = results.filter((r) => r[id]).length
+      statRows.push([k.ma_de, label, group.length, ok, Math.round((ok / group.length) * 1000) / 10])
+    }
+  }
+  const ws3 = XLSX.utils.aoa_to_sheet(statRows)
+
+  const wb = XLSX.utils.book_new()
+  XLSX.utils.book_append_sheet(wb, ws1, 'Kết quả')
+  XLSX.utils.book_append_sheet(wb, ws2, 'Đáp án')
+  XLSX.utils.book_append_sheet(wb, ws3, 'Tỉ lệ đúng')
+  const safe = stripVN(batch.title).replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'cham_phieu'
+  XLSX.writeFile(wb, `${safe}_ket_qua.xlsx`)
+}
+
+/** Số câu làm đúng: Phần I, III theo câu; Phần II tính câu đúng đủ 4 ý */
+function countRight(correct: Record<CellId, boolean>): number {
+  let n = 0
+  const p2: Record<string, number> = {}
+  for (const [id, ok] of Object.entries(correct)) {
+    if (id.startsWith('2.')) {
+      const q = id.slice(0, -1)
+      p2[q] = (p2[q] || 0) + (ok ? 1 : 0)
+    } else if (ok) n++
+  }
+  return n + Object.values(p2).filter((v) => v === 4).length
+}
+
 export default function TeacherPaperGradingDetail() {
   const { batchId } = useParams()
   const { teacher } = useAuth()
@@ -195,6 +313,11 @@ export default function TeacherPaperGradingDetail() {
   const [loadError, setLoadError] = useState('')
   const [tab, setTab] = useState<'key' | 'grade' | 'result'>('key')
   const [rescoring, setRescoring] = useState(false)
+  const [pdfBusy, setPdfBusy] = useState(false)
+  // số phiếu đang chờ rà (có cảnh báo) trong hàng đợi chấm
+  const [queueStats, setQueueStats] = useState({ review: 0, warn: 0, waiting: 0 })
+  // bấm "Quét bài" -> mở camera ở tab Chấm phiếu
+  const [cameraSignal, setCameraSignal] = useState(0)
   // mã đề cần nhập đáp án (bấm từ tab Chấm phiếu) -> tab Đáp án mở sẵn ô nhập với mã này
   const [wantKey, setWantKey] = useState<{ maDe: string; n: number } | null>(null)
   const firstLoad = useRef(true)
@@ -205,8 +328,8 @@ export default function TeacherPaperGradingDetail() {
     if (!batchId) return
     const { data: b, error } = await supabase.from('paper_batches').select('id, title, class_id, config').eq('id', batchId).single()
     if (error || !b) return setLoadError(error?.message || 'Không tìm thấy đợt chấm.')
-    setBatch(b as Batch)
-    const c = (b as Batch).config
+    const c = normalizeConfig((b as Batch).config)
+    setBatch({ ...(b as Batch), config: c })
     const [k, s, r] = await Promise.all([
       supabase.from('paper_keys').select('id, ma_de, answers').eq('batch_id', batchId).order('ma_de'),
       supabase
@@ -232,10 +355,22 @@ export default function TeacherPaperGradingDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [batchId])
 
+  const stats = useMemo(() => {
+    const scores = sheets.map((s) => s.score)
+    const n = scores.length
+    return {
+      n,
+      avg: n ? Math.round((scores.reduce((t, v) => t + v, 0) / n) * 100) / 100 : 0,
+      hi: n ? Math.max(...scores) : 0,
+      lo: n ? Math.min(...scores) : 0,
+      warned: sheets.filter((s) => s.read_flags && Object.keys(s.read_flags).length).length,
+    }
+  }, [sheets])
+
   if (loadError)
     return (
       <div className="container">
-        <p style={{ color: 'var(--danger)' }}>{loadError}</p>
+        <div className="notice err">{loadError}</div>
         <Link to="/cham-phieu">← Danh sách đợt chấm</Link>
       </div>
     )
@@ -245,6 +380,18 @@ export default function TeacherPaperGradingDetail() {
         <p>Đang tải…</p>
       </div>
     )
+
+  /** Lưu cấu hình mới của đợt chấm (giữ nguyên đáp án, phiếu) */
+  async function saveConfig(next: PaperConfig): Promise<boolean> {
+    if (!batch) return false
+    const { error } = await supabase.from('paper_batches').update({ config: next }).eq('id', batch.id)
+    if (error) {
+      alert(error.message)
+      return false
+    }
+    await loadAll()
+    return true
+  }
 
   /** Đổi cách tính điểm Phần 2 (thang Bộ / chia đều) và chấm lại mọi phiếu đã lưu theo đáp án hiện có */
   async function changeTfMethod(m: PaperConfig['tfMethod']) {
@@ -293,70 +440,250 @@ export default function TeacherPaperGradingDetail() {
           : `Phiếu 35 câu chỉ có ${L.n1} câu trắc nghiệm A–D (không có Phần 2, Phần 3), đợt chấm này có ${cfg.n1} – ${cfg.n2} – ${cfg.n3} câu.`,
       )
     const next: PaperConfig =
-      to === 'class' ? { ...cfg, sheet: 'class', identity: 'name', paper: autoPaperSize(cfg) } : { ...cfg, sheet: to, identity: 'phach', paper: undefined }
-    const { error } = await supabase.from('paper_batches').update({ config: next }).eq('id', batch.id)
-    if (error) return alert(error.message)
-    await loadAll()
+      to === 'class'
+        ? { ...cfg, sheet: 'class', identity: 'name', paper: fitsHalfA4(cfg) ? 'A5' : 'A4', bigBubbles: !fitsHalfA4(cfg), parts: undefined }
+        : { ...cfg, sheet: to, identity: 'phach', paper: undefined, bigBubbles: undefined, parts: to === 'school' ? cfg.parts || 'all' : undefined }
+    await saveConfig(next)
   }
 
-  const tabBtn = (t: typeof tab, label: string) => (
-    <button className={`btn ${tab === t ? '' : 'secondary'}`} onClick={() => setTab(t)}>
+  /** Đổi khổ phiếu lớp (nửa trang / 1 trang). Đổi được bất cứ lúc nào — điểm đã lưu không đổi */
+  async function changePaper(p: 'A5' | 'A4') {
+    if (!cfg || cfg.sheet !== 'class') return
+    const cur = cfg.paper === 'A5' ? 'A5' : 'A4'
+    if (p === cur) return
+    if (p === 'A5' && !fitsHalfA4(cfg)) return alert('Đề này quá dài, không vừa nửa trang A4.')
+    if (!confirm('Đổi khổ phiếu? Phiếu đã in theo khổ cũ sẽ KHÔNG quét được với khổ mới — chỉ đổi khi cô chưa in phiếu hoặc sẽ in lại.')) return
+    await saveConfig({ ...cfg, paper: p, bigBubbles: p === 'A4' })
+  }
+
+  /** Phiếu trường: đổi phạm vi chấm (chỉ P1+P2 / cả 3 phần) — chỉ khi chưa lưu phiếu nào */
+  async function changeParts(p: 'p12' | 'all') {
+    if (!cfg || cfg.sheet !== 'school') return
+    if ((cfg.parts === 'p12' ? 'p12' : 'all') === p) return
+    if (sheets.length) return alert('Đợt chấm đã có phiếu được lưu nên không đổi phạm vi chấm được. Hãy tạo đợt chấm mới.')
+    if (p === 'p12') return void saveConfig({ ...cfg, parts: 'p12', n3: 0 })
+    const v = prompt(`Chấm cả Phần III: Phần III có mấy câu? (tối đa ${SCHOOL_LIMITS.n3})`, '6')
+    const n3 = Math.round(Number(v))
+    if (!v || !Number.isFinite(n3) || n3 < 1 || n3 > SCHOOL_LIMITS.n3) return
+    const ok = await saveConfig({ ...cfg, parts: 'all', n3 })
+    if (ok && keys.length) alert('Đã bật Phần III. Hãy bổ sung đáp án Phần III cho từng mã đề ở tab "1. Đáp án" trước khi chấm.')
+  }
+
+  async function pdf() {
+    if (!cfg || !batch) return
+    setPdfBusy(true)
+    try {
+      await downloadSheetPdf(cfg, batch.title)
+    } catch (e) {
+      alert((e as Error).message)
+    } finally {
+      setPdfBusy(false)
+    }
+  }
+
+  const tabBtn = (t: typeof tab, label: string, count?: number) => (
+    <button type="button" className={tab === t ? 'on' : ''} onClick={() => setTab(t)}>
       {label}
+      {count !== undefined && <span className="count">{count}</span>}
     </button>
   )
+  const sheetName =
+    cfg.sheet === 'school'
+      ? 'Phiếu của trường (phách)'
+      : cfg.sheet === 'grid35'
+        ? 'Phiếu 35 câu (phách)'
+        : cfg.sheet === 'class'
+          ? 'Phiếu tô ô do web tạo'
+          : 'Phiếu viết tay (kiểu cũ)'
+  const incompleteKeys = keys.filter((k) => !keyIsComplete(k.answers, cfg))
 
   return (
-    <div className="container" style={{ maxWidth: 1200 }}>
-      <Link to="/cham-phieu">← Danh sách đợt chấm</Link>
-      <h1 style={{ marginBottom: 4 }}>{batch.title}</h1>
-      <p style={{ color: 'var(--muted)', marginTop: 0 }}>
-        Phần 1: {cfg.n1} câu × {cfg.p1}đ · Phần 2: {cfg.n2} câu × {cfg.p2}đ (
-        <select
-          value={cfg.tfMethod}
-          disabled={rescoring}
-          onChange={(e) => changeTfMethod(e.target.value as PaperConfig['tfMethod'])}
-          title="Đổi cách tính điểm Phần 2 — các phiếu đã lưu được chấm lại ngay"
-          style={{ display: 'inline-block', width: 'auto', margin: '0 2px', padding: '2px 6px', fontSize: 13 }}
+    <div className="container wide">
+      <Link to="/cham-phieu" className="back-link">
+        ← Danh sách đợt chấm
+      </Link>
+      <div className="page-head">
+        <div>
+          <h1 style={{ marginBottom: 6 }}>{batch.title}</h1>
+          <div className="toolbar" style={{ gap: 6 }}>
+            <span className="badge">{sheetName}</span>
+            {cfg.sheet === 'class' && <span className="badge gray">{describeClassPaper(cfg, cfg.paper, cfg.bigBubbles)}</span>}
+            <span className="badge gray">
+              P1: {cfg.n1} × {cfg.p1}đ
+            </span>
+            {cfg.n2 > 0 && (
+              <span className="badge gray">
+                P2: {cfg.n2} × {cfg.p2}đ
+              </span>
+            )}
+            {cfg.n3 > 0 ? (
+              <span className="badge gray">
+                P3: {cfg.n3} × {cfg.p3}đ
+              </span>
+            ) : (
+              cfg.sheet !== 'grid35' && <span className="badge warn">Phần III: không chấm</span>
+            )}
+            {cfg.identity !== 'phach' && !batch.class_id && <span className="badge warn">Không gắn lớp</span>}
+          </div>
+        </div>
+      </div>
+
+      {/* THAO TÁC NHANH */}
+      <div className="quick-actions">
+        <button
+          type="button"
+          className="qa orange"
+          disabled={!keys.length}
+          title={keys.length ? '' : 'Cần nhập đáp án trước'}
+          onClick={() => {
+            setTab('grade')
+            setCameraSignal((n) => n + 1)
+          }}
         >
-          <option value="ministry_partial">thang Bộ GDĐT (1 ý 10%, 2 ý 25%, 3 ý 50%, 4 ý 100%)</option>
-          <option value="equal_split">chia đều (mỗi ý 25%)</option>
-        </select>
-        {rescoring && ' đang chấm lại…'}) · Phần 3: {cfg.n3} câu × {cfg.p3}đ
-        {cfg.identity !== 'phach' && !batch.class_id && ' · Không gắn lớp (không khớp được danh sách học sinh)'}
-        <br />
-        Phiếu:{' '}
-        <b>
-          {cfg.sheet === 'school'
-            ? 'phiếu tô ô của trường — nhận diện bằng Mã phách + Số phách'
-            : cfg.sheet === 'grid35'
-              ? 'phiếu 35 câu (chữ A B C D trong ô) — nhận diện bằng Mã phách + Số phách'
-              : cfg.sheet === 'class'
-                ? `phiếu tô ô do web tạo (${cfg.paper === 'A5' ? '2 phiếu/tờ A4' : '1 phiếu/tờ A4'})`
-                : 'phiếu viết tay (kiểu cũ)'}
-        </b>
+          <span className="ico">📸</span>
+          <span>
+            Quét bài<small>Camera / ảnh / PDF scan</small>
+          </span>
+        </button>
         {cfg.sheet === 'class' && (
-          <button className="btn secondary" style={{ padding: '3px 10px', fontSize: 12, marginLeft: 10 }} onClick={() => openPrintSheets(cfg, batch.title)}>
-            🖨 In / tải PDF mẫu phiếu
+          <button type="button" className="qa violet" onClick={pdf} disabled={pdfBusy}>
+            <span className="ico">⬇</span>
+            <span>
+              {pdfBusy ? 'Đang tạo PDF…' : 'Tải phiếu (PDF)'}
+              <small>
+                <a
+                  href="#"
+                  onClick={(e) => {
+                    e.preventDefault()
+                    e.stopPropagation()
+                    openPrintSheets(cfg, batch.title)
+                  }}
+                >
+                  hoặc 🖨 in trực tiếp
+                </a>
+              </small>
+            </span>
           </button>
         )}
-        {isBubbleSheet(cfg) && !sheets.length && (
-          <select
-            value=""
-            onChange={(e) => e.target.value && switchSheet(e.target.value as SheetKind)}
-            title="Chọn nhầm loại phiếu khi tạo đợt? Đổi ở đây (chỉ khi chưa lưu phiếu nào)"
-            style={{ display: 'inline-block', width: 'auto', margin: '0 0 0 10px', padding: '2px 6px', fontSize: 12 }}
-          >
-            <option value="">↔ Đổi loại phiếu…</option>
-            {cfg.sheet !== 'class' && <option value="class">Phiếu tô ô do web tạo</option>}
-            {cfg.sheet !== 'school' && <option value="school">Phiếu của trường (40 – 6 – 8)</option>}
-            {cfg.sheet !== 'grid35' && <option value="grid35">Phiếu 35 câu (chữ trong ô)</option>}
-          </select>
-        )}
-      </p>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
-        {tabBtn('key', `1. Đáp án (${keys.length} mã đề)`)}
-        {tabBtn('grade', '2. Chấm phiếu')}
-        {tabBtn('result', `3. Kết quả (${sheets.length})`)}
+        <button type="button" className="qa" onClick={() => setTab('key')}>
+          <span className="ico">🔑</span>
+          <span>
+            Nhập đáp án<small>{keys.length ? `${keys.length} mã đề` : 'Chưa có mã đề nào'}</small>
+          </span>
+        </button>
+        <button type="button" className="qa green" disabled={!sheets.length} onClick={() => exportBatchExcel(batch, cfg, keys, sheets, roster)}>
+          <span className="ico">📊</span>
+          <span>
+            Xuất Excel<small>Bảng điểm + tỉ lệ đúng</small>
+          </span>
+        </button>
+      </div>
+
+      {/* THỐNG KÊ NHANH */}
+      <div className="stat-cards">
+        <div className="stat-card">
+          <span className="icon">📝</span>
+          <div>
+            <div className="value">{stats.n}</div>
+            <div className="label">Bài đã chấm{cfg.identity !== 'phach' && roster.length ? ` / ${roster.length} HS` : ''}</div>
+          </div>
+        </div>
+        <div className="stat-card green">
+          <span className="icon">⭐</span>
+          <div>
+            <div className="value">{stats.avg}</div>
+            <div className="label">Điểm trung bình</div>
+          </div>
+        </div>
+        <div className="stat-card violet">
+          <span className="icon">📈</span>
+          <div>
+            <div className="value">{stats.n ? `${stats.hi} / ${stats.lo}` : '—'}</div>
+            <div className="label">Cao nhất / thấp nhất</div>
+          </div>
+        </div>
+        <div className="stat-card orange">
+          <span className="icon">⚠️</span>
+          <div>
+            <div className="value">{queueStats.warn}</div>
+            <div className="label">
+              Bài cần kiểm tra{stats.warned ? ` · ${stats.warned} bài đã lưu từng có cảnh báo` : ''}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {incompleteKeys.length > 0 && (
+        <div className="notice warn">
+          Đáp án mã đề <b>{incompleteKeys.map((k) => k.ma_de).join(', ')}</b> chưa đủ theo cấu trúc hiện tại
+          {cfg.n3 > 0 ? ' (thường do vừa bật chấm Phần III)' : ''} — bổ sung ở tab "1. Đáp án" thì mới chấm được các mã này.
+        </div>
+      )}
+
+      <div className="card" style={{ padding: '12px 16px' }}>
+        <div className="toolbar" style={{ gap: '8px 18px' }}>
+          {cfg.n2 > 0 && (
+            <span className="small">
+              Điểm Phần II:{' '}
+              <select
+                value={cfg.tfMethod}
+                disabled={rescoring}
+                onChange={(e) => changeTfMethod(e.target.value as PaperConfig['tfMethod'])}
+                title="Đổi cách tính điểm Phần 2 — các phiếu đã lưu được chấm lại ngay"
+                style={{ display: 'inline-block', width: 'auto', maxWidth: '100%', margin: 0, padding: '4px 8px', fontSize: 13 }}
+              >
+                <option value="ministry_partial">Thang Bộ GDĐT (1 ý 10%, 2 ý 25%, 3 ý 50%, 4 ý 100%)</option>
+                <option value="equal_split">Chia đều (mỗi ý 25%)</option>
+              </select>
+              {rescoring && ' đang chấm lại…'}
+            </span>
+          )}
+          {cfg.sheet === 'class' && (
+            <span className="small">
+              Khổ phiếu:{' '}
+              <span className="seg small">
+                <button type="button" className={cfg.paper === 'A5' ? 'on' : ''} disabled={!fitsHalfA4(cfg)} onClick={() => changePaper('A5')}>
+                  Nửa trang A4
+                </button>
+                <button type="button" className={cfg.paper !== 'A5' ? 'on' : ''} onClick={() => changePaper('A4')}>
+                  1 trang A4
+                </button>
+              </span>
+            </span>
+          )}
+          {cfg.sheet === 'school' && (
+            <span className="small">
+              Phạm vi chấm:{' '}
+              <span className="seg small">
+                <button type="button" className={cfg.parts === 'p12' ? 'on' : ''} disabled={!!sheets.length} onClick={() => changeParts('p12')}>
+                  Chỉ Phần I + II
+                </button>
+                <button type="button" className={cfg.parts !== 'p12' ? 'on' : ''} disabled={!!sheets.length} onClick={() => changeParts('all')}>
+                  Cả 3 phần
+                </button>
+              </span>
+            </span>
+          )}
+          {isBubbleSheet(cfg) && !sheets.length && (
+            <select
+              value=""
+              onChange={(e) => e.target.value && switchSheet(e.target.value as SheetKind)}
+              title="Chọn nhầm loại phiếu khi tạo đợt? Đổi ở đây (chỉ khi chưa lưu phiếu nào)"
+              style={{ display: 'inline-block', width: 'auto', maxWidth: '100%', margin: 0, padding: '4px 8px', fontSize: 13 }}
+            >
+              <option value="">↔ Đổi loại phiếu…</option>
+              {cfg.sheet !== 'class' && <option value="class">Phiếu tô ô do web tạo</option>}
+              {cfg.sheet !== 'school' && <option value="school">Phiếu của trường (40 – 6 – 8)</option>}
+              {cfg.sheet !== 'grid35' && <option value="grid35">Phiếu 35 câu (chữ trong ô)</option>}
+            </select>
+          )}
+        </div>
+      </div>
+
+      <div className="tabs">
+        {tabBtn('key', '1. Đáp án', keys.length)}
+        {tabBtn('grade', '2. Chấm phiếu', queueStats.review || undefined)}
+        {tabBtn('result', '3. Kết quả', sheets.length)}
       </div>
 
       {tab === 'key' && (
@@ -383,6 +710,8 @@ export default function TeacherPaperGradingDetail() {
           sheets={sheets}
           onSaved={loadAll}
           hasClass={!!batch.class_id}
+          cameraSignal={cameraSignal}
+          onStats={setQueueStats}
           onNeedKey={(maDe) => {
             setWantKey((w) => ({ maDe, n: (w?.n || 0) + 1 }))
             setTab('key')
@@ -600,7 +929,10 @@ function KeySection(props: {
   return (
     <>
       <div className="card">
-        <h2>Đáp án theo mã đề</h2>
+        <div className="card-title">
+          <span className="num">1</span>
+          <h2>Đáp án theo mã đề</h2>
+        </div>
         {bubble ? (
           <div style={{ color: 'var(--muted)', marginTop: 0, fontSize: 14 }}>
             <p style={{ margin: '0 0 6px' }}>Có 3 cách đưa đáp án vào:</p>
@@ -627,15 +959,21 @@ function KeySection(props: {
               <span className="badge" style={{ fontSize: 14 }}>
                 Mã đề {k.ma_de}
               </span>
+              {missingKeyCells(k.answers, cfg).length > 0 ? (
+                <span className="badge wrong" title={missingKeyCells(k.answers, cfg).join(', ')}>
+                  Thiếu {missingKeyCells(k.answers, cfg).length} ô đáp án
+                </span>
+              ) : (
+                <span className="badge ok">✓ Đủ đáp án</span>
+              )}
               <span style={{ color: 'var(--muted)', fontSize: 13 }}>{sheets.filter((s) => s.ma_de === k.ma_de).length} phiếu đã chấm</span>
               <button
-                className="btn secondary"
-                style={{ padding: '3px 10px', fontSize: 12 }}
+                className="btn secondary sm"
                 onClick={() => setDraft({ id: k.id, maDe: k.ma_de, answers: k.answers, flags: {}, reading: false, error: '' })}
               >
                 Sửa
               </button>
-              <button className="btn danger" style={{ padding: '3px 10px', fontSize: 12 }} onClick={() => remove(k)}>
+              <button className="btn danger soft sm" onClick={() => remove(k)}>
                 Xoá
               </button>
             </div>
@@ -665,7 +1003,7 @@ function KeySection(props: {
       </div>
 
       {draft && (
-        <div className="card" style={{ border: '2px solid var(--primary)' }}>
+        <div className="card accent">
           <h2>{draft.id ? `Sửa đáp án mã đề ${draft.maDe}` : 'Thêm đáp án mã đề'}</h2>
           {pending.length > 0 && <p className="badge">Còn {pending.length} mã đề đọc từ bảng đáp án chờ rà sau mã này</p>}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'flex-end', marginBottom: 12 }}>
@@ -720,7 +1058,7 @@ function KeySection(props: {
               <FlagList flags={draft.flags} onClear={() => setDraft({ ...draft, flags: {} })} />
             </div>
           </div>
-          {draft.error && <p style={{ color: 'var(--danger)', whiteSpace: 'pre-line' }}>{draft.error}</p>}
+          {draft.error && <div className="notice err">{draft.error}</div>}
           <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
             <button className="btn" onClick={save} disabled={saving || draft.reading}>
               {saving ? 'Đang lưu…' : 'Lưu đáp án'}
@@ -753,29 +1091,51 @@ function KeySection(props: {
 }
 
 /** Danh sách lý do các ô tô vàng + nút xác nhận đã rà */
+const ROMAN = ['', 'I', 'II', 'III']
+
+function flagLabel(id: string): string {
+  if (id === 'made') return 'Mã đề'
+  if (id === 'name') return 'Họ tên'
+  if (id === 'phach') return 'Phách'
+  if (id === 'ai') return 'Phần viết tay'
+  if (id === 'all') return 'Cả bảng đáp án'
+  if (id === 'img') return 'Chất lượng ảnh'
+  const [p, rest] = id.split('.')
+  return `Phần ${ROMAN[Number(p)] || p} – ${rest === '*' ? 'số câu' : `câu ${rest}`}`
+}
+
+/** Danh sách lý do các ô tô vàng (phân loại: bỏ trống / tô nhiều ô / tô mờ / ảnh kém) + nút xác nhận đã rà */
 function FlagList({ flags, onClear }: { flags: Record<CellId, string>; onClear: () => void }) {
   const entries = Object.entries(flags)
   if (!entries.length) return null
-  const label = (id: string) => {
-    if (id === 'made') return 'Mã đề'
-    if (id === 'name') return 'Họ tên'
-    if (id === 'phach') return 'Phách'
-    if (id === 'ai') return 'Phần viết tay'
-    if (id === 'all') return 'Cả bảng đáp án'
-    const [p, rest] = id.split('.')
-    return `Phần ${p} – ${rest === '*' ? 'số câu' : `câu ${rest}`}`
-  }
+  // ảnh kém lên đầu, rồi tô nhiều ô, bỏ trống, tô mờ…
+  const order: Record<string, number> = { image: 0, multi: 1, blank: 2, faint: 3, info: 4, other: 5 }
+  const sorted = [...entries].sort((a, b) => order[flagKind(a[0], a[1])] - order[flagKind(b[0], b[1])])
+  const kinds = countFlagKinds(flags)
   return (
-    <div style={{ background: '#fffbeb', border: '1px solid #f59e0b', borderRadius: 8, padding: '8px 12px', margin: '8px 0', fontSize: 13 }}>
-      <b>⚠ {entries.length} chỗ cần rà:</b>
-      <ul style={{ margin: '4px 0 6px', paddingLeft: 18 }}>
-        {entries.map(([id, why]) => (
-          <li key={id}>
-            <b>{label(id)}</b>: {why}
-          </li>
+    <div className="flag-box">
+      <b>⚠ {entries.length} chỗ cần rà</b>
+      <div className="flag-kinds">
+        {(Object.keys(kinds) as (keyof typeof kinds)[]).map((k) => (
+          <span key={k} className={`badge ${k === 'image' || k === 'multi' ? 'wrong' : 'warn'}`}>
+            {FLAG_KIND_LABEL[k]}: {kinds[k]}
+          </span>
         ))}
+      </div>
+      <ul>
+        {sorted.map(([id, why]) => {
+          const k = flagKind(id, why)
+          return (
+            <li key={id}>
+              <span className={`badge ${k === 'image' || k === 'multi' ? 'wrong' : k === 'info' || k === 'other' ? 'gray' : 'warn'}`}>{FLAG_KIND_LABEL[k]}</span>
+              <span>
+                <b>{flagLabel(id)}</b>: {why}
+              </span>
+            </li>
+          )
+        })}
       </ul>
-      <button className="btn secondary" style={{ padding: '3px 10px', fontSize: 12 }} onClick={onClear}>
+      <button className="btn secondary sm" onClick={onClear}>
         ✓ Đã rà xong các ô vàng
       </button>
     </div>
@@ -798,6 +1158,10 @@ function GradeSection(props: {
   hasClass: boolean
   /** mở tab Đáp án để nhập đáp án cho một mã đề chưa có */
   onNeedKey: (maDe: string) => void
+  /** tăng lên 1 -> mở camera (nút "Quét bài" ở đầu trang) */
+  cameraSignal?: number
+  /** báo số phiếu chờ rà / có cảnh báo cho thẻ thống kê đầu trang */
+  onStats?: (s: { review: number; warn: number; waiting: number }) => void
 }) {
   const [queue, setQueue] = useState<QueueItem[]>([])
   const [camera, setCamera] = useState(false)
@@ -806,7 +1170,11 @@ function GradeSection(props: {
   const [msg, setMsg] = useState('')
   const fileRef = useRef<HTMLInputElement>(null)
   const busy = useRef(false)
-  const { batchId, batchTitle, teacherId, cfg, keys, roster, sheets, onSaved, hasClass, onNeedKey } = props
+  const { batchId, batchTitle, teacherId, cfg, keys, roster, sheets, onSaved, hasClass, onNeedKey, cameraSignal, onStats } = props
+  useEffect(() => {
+    if (cameraSignal && keys.length) setCamera(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cameraSignal])
   const { teacher } = useAuth()
   const [driveOn, setDriveOn] = useState(driveConnected())
   // giáo viên đã chọn lưu ảnh vào Drive trong phiên này -> khi token hết hạn, lần bấm Lưu kế tiếp tự xin lại
@@ -842,7 +1210,12 @@ function GradeSection(props: {
     try {
       const img = await shrinkJpeg(it.dataUrl, 1600, 0.8)
       const image_drive_id = await uploadImage(batchTitle, `${base} (ảnh gốc).jpg`, img)
-      const overlay_drive_id = it.read?.overlay ? await uploadImage(batchTitle, `${base} (máy đọc).jpg`, it.read.overlay) : undefined
+      // ảnh máy đọc: vẽ lớp chấm đúng/sai theo bài làm cuối cùng (đã rà) và đáp án của mã đề
+      const key = keys.find((k) => k.ma_de === it.maDe)
+      let ov = it.read?.overlay
+      if (it.read?.overlayBase && it.read.overlayGeo && it.answers)
+        ov = await renderGradedOverlay(it.read.overlayBase, it.read.overlayGeo, it.answers, key?.answers, {}, cfg).catch(() => it.read?.overlay)
+      const overlay_drive_id = ov ? await uploadImage(batchTitle, `${base} (máy đọc).jpg`, ov) : undefined
       return { ids: { image_drive_id, ...(overlay_drive_id ? { overlay_drive_id } : {}) }, err: '' }
     } catch (e) {
       return { ids: {}, err: (e as Error).message }
@@ -999,6 +1372,8 @@ function GradeSection(props: {
           ? `Chưa có đáp án mã đề ${it.read.maDe.trim()} — nhập đáp án ở tab 1 hoặc chọn mã đề khác.`
           : 'Chưa chọn mã đề có đáp án.',
       )
+    const kk = keys.find((k) => k.ma_de === it.maDe)
+    if (kk && !keyIsComplete(kk.answers, cfg)) errs.push(`Đáp án mã ${kk.ma_de} chưa đủ — bổ sung ở tab 1 rồi lưu.`)
     if (phach) {
       if (!it.maPhach.trim() || !it.soPhach.trim()) errs.push('Chưa có mã phách / số phách.')
       const dupQ = queue.find((o) => o.uid !== it.uid && o.status === 'saved' && samePhach(o, it.maPhach, it.soPhach))
@@ -1066,11 +1441,20 @@ function GradeSection(props: {
       edited_cells: it.read ? diffCells(it.read.answers, it.answers!, cfg) : [],
       ai_model: it.read?.model || null,
       ...up.ids,
+      // cảnh báo lúc máy đọc (để thống kê bài từng cần kiểm tra); cột tuỳ chọn — CSDL cũ chưa có cột vẫn lưu được
+      read_flags: it.read?.flags || {},
       updated_at: new Date().toISOString(),
     }
-    const res = existing
-      ? await supabase.from('paper_sheets').update(row).eq('id', existing.id).select('id').single()
-      : await supabase.from('paper_sheets').insert(row).select('id').single()
+    const write = (r: Record<string, unknown>) =>
+      existing
+        ? supabase.from('paper_sheets').update(r).eq('id', existing.id).select('id').single()
+        : supabase.from('paper_sheets').insert(r).select('id').single()
+    let res = await write(row)
+    if (res.error && /read_flags/.test(res.error.message || '')) {
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { read_flags: _omit, ...rest } = row
+      res = await write(rest)
+    }
     if (res.error) {
       const dup = res.error.code === '23505'
       const noCol = /ma_phach|so_phach|stt|drive_id/.test(res.error.message)
@@ -1109,6 +1493,11 @@ function GradeSection(props: {
     queue.forEach((it) => c[it.status]++)
     return c
   }, [queue])
+  const warnCount = queue.filter((it) => it.status === 'error' || (it.status === 'review' && Object.keys(it.flags).length > 0)).length
+  useEffect(() => {
+    onStats?.({ review: counts.review, warn: warnCount, waiting: counts.waiting + counts.reading })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [counts.review, counts.waiting, counts.reading, warnCount])
 
   if (!keys.length)
     return (
@@ -1120,13 +1509,16 @@ function GradeSection(props: {
   return (
     <>
       <div className="card">
-        <h2>Chấm phiếu bài làm</h2>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <div className="card-title">
+          <span className="num">2</span>
+          <h2>Chấm phiếu bài làm</h2>
+        </div>
+        <div className="toolbar big">
           <button className="btn accent" onClick={() => setCamera(true)}>
-            📸 Bật camera chụp liên tục
+            <span className="ico">📸</span> Bật camera chụp liên tục
           </button>
           <button className="btn secondary" onClick={() => fileRef.current?.click()} disabled={importing}>
-            {importing ? 'Đang mở file…' : '🖼 Chọn ảnh / file scan (PDF)'}
+            <span className="ico">🖼</span> {importing ? 'Đang mở file…' : 'Chọn ảnh / file scan (PDF)'}
           </button>
           <input ref={fileRef} type="file" multiple accept="image/*,application/pdf" style={{ display: 'none' }} onChange={onFiles} />
           {driveConfigured &&
@@ -1155,19 +1547,22 @@ function GradeSection(props: {
                 ☁️ Kết nối Google Drive để lưu ảnh phiếu
               </button>
             ))}
-          <label style={{ display: 'inline-flex', alignItems: 'center', gap: 6, margin: 0, fontWeight: 500 }}>
-            <input type="checkbox" checked={doubleCheck} onChange={(e) => setDoubleCheck(e.target.checked)} style={{ width: 'auto', margin: 0 }} />
+          <label className="check small">
+            <input type="checkbox" checked={doubleCheck} onChange={(e) => setDoubleCheck(e.target.checked)} />
             {isBubbleSheet(cfg)
               ? 'Chữ viết tay (mã đề, phách/họ tên, Phần III) đọc 2 lần bằng 2 model để đối chiếu'
               : 'Đọc 2 lần bằng 2 model để đối chiếu (chính xác hơn, tốn gấp đôi lượt AI)'}
           </label>
         </div>
-        <p style={{ color: 'var(--muted)', fontSize: 13, marginBottom: 0 }}>
-          File PDF scan nhiều trang: mỗi trang là một phiếu. Chờ đọc: {counts.waiting + counts.reading} · Cần rà: {counts.review} · Đã
-          lưu: {counts.saved} · Lỗi: {counts.error}
-        </p>
-        <div style={{ display: 'flex', gap: 8, marginTop: 10, flexWrap: 'wrap' }}>
-          <button className="btn" onClick={saveAllReady} disabled={!counts.review}>
+        <p className="small muted" style={{ margin: '10px 0 6px' }}>File PDF scan nhiều trang: mỗi trang là một phiếu.</p>
+        <div className="toolbar" style={{ gap: 6 }}>
+          <span className="badge gray">⏳ Chờ đọc {counts.waiting + counts.reading}</span>
+          <span className="badge warn">⚠ Cần rà {counts.review}</span>
+          <span className="badge ok">✓ Đã lưu {counts.saved}</span>
+          {counts.error > 0 && <span className="badge wrong">✗ Lỗi {counts.error}</span>}
+        </div>
+        <div className="toolbar" style={{ marginTop: 10 }}>
+          <button className="btn success" onClick={saveAllReady} disabled={!counts.review}>
             💾 Lưu tất cả phiếu đã sẵn sàng
           </button>
           {counts.saved > 0 && (
@@ -1176,9 +1571,9 @@ function GradeSection(props: {
             </button>
           )}
         </div>
-        {msg && <p style={{ whiteSpace: 'pre-line' }}>{msg}</p>}
+        {msg && <div className="notice info">{msg}</div>}
         {missingCodes.length > 0 && (
-          <div style={{ background: '#fffbeb', border: '1px solid #f59e0b', borderRadius: 8, padding: '8px 12px', marginTop: 10, fontSize: 13.5 }}>
+          <div className="notice warn">
             <b>⚠ Chưa có đáp án cho mã đề ghi trên phiếu:</b>{' '}
             {missingCodes.map((m) => `${m.code} (${m.n} phiếu)`).join(', ')}. Đợt chấm hiện chỉ có đáp án mã{' '}
             {keys.map((k) => k.ma_de).join(', ')} nên các phiếu này <b>chưa được chấm</b>. Nhập đáp án xong, phiếu sẽ tự khớp đúng mã đề.
@@ -1268,46 +1663,74 @@ function QueueCard(props: {
     error: <span className="badge wrong">Lỗi</span>,
   }[it.status]
 
+  const kinds = countFlagKinds(it.flags)
+  const nRight = sc ? countRight(sc.correct) : 0
+  const nAll = cfg.n1 + cfg.n2 + cfg.n3
+
   return (
-    <div className="card" style={{ opacity: saved ? 0.75 : 1 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
-        <div>
-          <b>Phiếu {index}</b> <span style={{ color: 'var(--muted)', fontSize: 13 }}>{it.label}</span> {statusBadge}
-          {it.read?.model && <span style={{ color: 'var(--muted)', fontSize: 12 }}> · {it.read.model}</span>}
+    <div className={`card queue-card ${saved ? 'saved' : ''}`}>
+      <div className="qc-head">
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <b>Phiếu {index}</b> {statusBadge}
+          <span className="muted small">{it.label}</span>
+          {it.status === 'review' &&
+            (Object.keys(kinds) as (keyof typeof kinds)[]).map((k) => (
+              <span key={k} className={`badge ${k === 'image' || k === 'multi' ? 'wrong' : 'warn'}`}>
+                {FLAG_KIND_LABEL[k]} {kinds[k]}
+              </span>
+            ))}
         </div>
         {sc && (
-          <div style={{ fontSize: 15 }}>
-            P1 <b>{sc.p1}</b> · P2 <b>{sc.p2}</b> · P3 <b>{sc.p3}</b> → <b style={{ fontSize: 20, color: 'var(--primary-dark)' }}>{sc.total}</b>/
-            {sc.max}
+          <div className="qc-score">
+            <span>
+              P1 <b>{sc.p1}</b>
+            </span>
+            {cfg.n2 > 0 && (
+              <span>
+                P2 <b>{sc.p2}</b>
+              </span>
+            )}
+            {cfg.n3 > 0 && (
+              <span>
+                P3 <b>{sc.p3}</b>
+              </span>
+            )}
+            <span className="badge ok">
+              ✓ {nRight}/{nAll} câu
+            </span>
+            <span>
+              <span className="total">{sc.total}</span>/{sc.max}
+            </span>
           </div>
         )}
       </div>
+      {it.read?.model && <p className="small muted" style={{ margin: '-4px 0 8px' }}>{it.read.model}</p>}
 
-      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'flex-start', marginTop: 10 }}>
-        <div style={{ width: it.read?.overlay ? 360 : 240 }}>
-          <a href="#" onClick={(e) => openImage(e, it.read?.overlay || it.dataUrl)} title="Mở ảnh lớn">
-            <img src={it.read?.overlay || it.dataUrl} alt={it.label} style={{ width: '100%', borderRadius: 8, border: '1px solid var(--border)' }} />
-          </a>
-          {it.read?.overlay && (
-            <div style={{ fontSize: 12, color: 'var(--muted)', lineHeight: 1.4 }}>
-              Ảnh đã nắn thẳng: <span style={{ color: '#16a34a', fontWeight: 700 }}>vòng xanh</span> = ô máy đọc được,{' '}
-              <span style={{ color: '#d97706', fontWeight: 700 }}>vòng cam</span> = hàng cần rà.{' '}
-              <a href="#" onClick={(e) => openImage(e, it.dataUrl)}>
-                Ảnh gốc
-              </a>
-            </div>
-          )}
-        </div>
-        <div style={{ flex: 1, minWidth: 320 }}>
+      <div className="qc-body">
+        <GradedImage
+          cfg={cfg}
+          base={it.read?.overlayBase}
+          geo={it.read?.overlayGeo}
+          fallback={it.read?.overlay || it.dataUrl}
+          original={it.dataUrl}
+          answers={it.answers}
+          answerKey={key?.answers}
+          flags={saved ? {} : it.flags}
+          width={it.read?.overlay ? 380 : 260}
+          alt={it.label}
+        />
+        <div className="qc-main">
           {it.status === 'error' && (
             <>
-              <p style={{ color: 'var(--danger)', whiteSpace: 'pre-line' }}>{it.error}</p>
-              <button className="btn secondary" onClick={onRetry}>
-                Đọc lại
-              </button>{' '}
-              <button className="btn danger" onClick={onRemove}>
-                Bỏ phiếu này
-              </button>
+              <div className="notice err">{it.error}</div>
+              <div className="toolbar">
+                <button className="btn secondary" onClick={onRetry}>
+                  ↻ Đọc lại
+                </button>
+                <button className="btn danger soft" onClick={onRemove}>
+                  Bỏ phiếu này
+                </button>
+              </div>
             </>
           )}
 
@@ -1322,7 +1745,7 @@ function QueueCard(props: {
                         value={it.maPhach}
                         disabled={saved}
                         placeholder="VD: T106"
-                        style={it.flags['phach'] ? { background: '#fef3c7', borderColor: '#f59e0b' } : undefined}
+                        className={it.flags['phach'] ? 'input-flag' : undefined}
                         onChange={(e) => onPatch({ maPhach: e.target.value, flags: clearFlag('phach') })}
                       />
                     </div>
@@ -1332,7 +1755,7 @@ function QueueCard(props: {
                         value={it.soPhach}
                         disabled={saved}
                         placeholder="VD: 01"
-                        style={it.flags['phach'] ? { background: '#fef3c7', borderColor: '#f59e0b' } : undefined}
+                        className={it.flags['phach'] ? 'input-flag' : undefined}
                         onChange={(e) => onPatch({ soPhach: e.target.value, flags: clearFlag('phach') })}
                       />
                       {already && (
@@ -1350,7 +1773,7 @@ function QueueCard(props: {
                     <select
                       value={it.studentId}
                       disabled={saved}
-                      style={it.flags['name'] ? { background: '#fef3c7', borderColor: '#f59e0b' } : undefined}
+                      className={it.flags['name'] ? 'input-flag' : undefined}
                       onChange={(e) => {
                         const id = e.target.value
                         const s = roster.find((x) => x.id === id)
@@ -1452,21 +1875,22 @@ function QueueCard(props: {
                   Chưa tính điểm vì chưa có mã đề chấm — chọn mã đề ở ô "Mã đề chấm" phía trên.
                 </p>
               )}
+              {key && <ResultSummary cfg={cfg} answers={it.answers} answerKey={key.answers} />}
               {!saved && <FlagList flags={it.flags} onClear={() => onPatch({ flags: {} })} />}
               {it.read?.note && <p style={{ fontSize: 12.5, color: 'var(--muted)' }}>Ghi chú của AI: {it.read.note}</p>}
-              {it.error && <p style={{ color: 'var(--danger)' }}>{it.error}</p>}
+              {it.error && <div className="notice err">{it.error}</div>}
               {!saved && (
-                <div style={{ display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
-                  <button className="btn" onClick={onSave} disabled={issues.length > 0} title={issues.join(' ')}>
+                <div className="toolbar" style={{ marginTop: 6 }}>
+                  <button className="btn success" onClick={onSave} disabled={issues.length > 0} title={issues.join(' ')}>
                     💾 Lưu phiếu
                   </button>
                   <button className="btn secondary" onClick={onRetry}>
-                    Đọc lại
+                    ↻ Đọc lại
                   </button>
-                  <button className="btn danger" onClick={onRemove}>
+                  <button className="btn danger soft" onClick={onRemove}>
                     Bỏ
                   </button>
-                  {issues.length > 0 && <span style={{ color: '#b45309', fontSize: 12.5, alignSelf: 'center' }}>{issues.join(' ')}</span>}
+                  {issues.length > 0 && <span style={{ color: '#b45309', fontSize: 12.5 }}>{issues.join(' ')}</span>}
                 </div>
               )}
             </>
@@ -1630,98 +2054,24 @@ function ResultSection(props: {
     await onChanged()
   }
 
-  function exportExcel() {
-    const qCols: string[] = []
-    for (let i = 1; i <= cfg.n1; i++) qCols.push(`P1.C${i}`)
-    for (let i = 1; i <= cfg.n2; i++) TF_KEYS.forEach((k) => qCols.push(`P2.C${i}${k}`))
-    for (let i = 1; i <= cfg.n3; i++) qCols.push(`P3.C${i}`)
-
-    const flat = (a: PaperAnswers): string[] => [
-      ...a.p1.map((x) => x || ''),
-      ...a.p2.flatMap((q) => q.map((x) => tfLabel(x))),
-      ...a.p3.map((x) => x || ''),
-    ]
-
-    // Sheet 1: kết quả
-    const head = [
-      'STT',
-      ...(phach ? ['Mã phách', 'Số phách'] : []),
-      'Họ và tên',
-      phach ? 'Lớp' : 'Lớp (phiếu ghi)',
-      'Mã đề',
-      'Điểm P1',
-      'Điểm P2',
-      'Điểm P3',
-      'Tổng điểm',
-      'Số ô sửa tay',
-      ...qCols,
-    ]
-    const rows: (string | number)[][] = [head]
-    sorted.forEach((s, i) => {
-      rows.push([
-        i + 1,
-        ...(phach ? [s.ma_phach || '', s.so_phach || ''] : []),
-        s.student_name,
-        s.class_label || '',
-        s.ma_de,
-        s.part_scores.p1,
-        s.part_scores.p2,
-        s.part_scores.p3,
-        s.score,
-        (s.edited_cells || []).length,
-        ...flat(s.answers),
-      ])
-    })
-    missing.forEach((s) => rows.push(['', s.full_name, '', '', '', '', '', 'Chưa có phiếu', '']))
-    const ws1 = XLSX.utils.aoa_to_sheet(rows)
-    ws1['!cols'] = [
-      { wch: 5 },
-      ...(phach ? [{ wch: 10 }, { wch: 9 }] : []),
-      { wch: 26 },
-      { wch: 10 },
-      { wch: 8 },
-      { wch: 8 },
-      { wch: 8 },
-      { wch: 8 },
-      { wch: 10 },
-      { wch: 8 },
-    ]
-
-    // Sheet 2: đáp án
-    const keyRows: string[][] = [['Mã đề', ...qCols]]
-    keys.forEach((k) => keyRows.push([k.ma_de, ...flat(k.answers)]))
-    const ws2 = XLSX.utils.aoa_to_sheet(keyRows)
-
-    // Sheet 3: tỉ lệ đúng từng câu theo mã đề
-    const statRows: (string | number)[][] = [['Mã đề', 'Câu', 'Số phiếu', 'Số đúng', 'Tỉ lệ đúng (%)']]
-    for (const k of keys) {
-      const group = sheets.filter((s) => s.ma_de === k.ma_de)
-      if (!group.length) continue
-      const results = group.map((s) => scorePaper(s.answers, k.answers, cfg).correct)
-      const ids: [string, CellId][] = []
-      for (let i = 1; i <= cfg.n1; i++) ids.push([`P1.C${i}`, `1.${i}`])
-      for (let i = 1; i <= cfg.n2; i++) TF_KEYS.forEach((t) => ids.push([`P2.C${i}${t}`, `2.${i}${t}`]))
-      for (let i = 1; i <= cfg.n3; i++) ids.push([`P3.C${i}`, `3.${i}`])
-      for (const [label, id] of ids) {
-        const ok = results.filter((r) => r[id]).length
-        statRows.push([k.ma_de, label, group.length, ok, Math.round((ok / group.length) * 1000) / 10])
-      }
-    }
-    const ws3 = XLSX.utils.aoa_to_sheet(statRows)
-
-    const wb = XLSX.utils.book_new()
-    XLSX.utils.book_append_sheet(wb, ws1, 'Kết quả')
-    XLSX.utils.book_append_sheet(wb, ws2, 'Đáp án')
-    XLSX.utils.book_append_sheet(wb, ws3, 'Tỉ lệ đúng')
-    const safe = stripVN(batch.title).replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'cham_phieu'
-    XLSX.writeFile(wb, `${safe}_ket_qua.xlsx`)
-  }
+  const exportExcel = () => exportBatchExcel(batch, cfg, keys, sheets, props.roster)
+  const hasP3 = cfg.n3 > 0
+  const nCols = 7 + (phach ? 1 : 0) + (hasP3 ? 1 : 0)
+  const [onlyWarn, setOnlyWarn] = useState(false)
+  const shown = onlyWarn ? sorted.filter((s) => (s.read_flags && Object.keys(s.read_flags).length) || (s.edited_cells || []).length) : sorted
+  // phân bố điểm (thang 10 chia 5 khoảng)
+  const maxScore = sheets[0]?.part_scores?.max || cfg.n1 * cfg.p1 + cfg.n2 * cfg.p2 + cfg.n3 * cfg.p3 || 10
+  const bins = [0, 0, 0, 0, 0]
+  for (const s of sheets) bins[Math.min(4, Math.floor((s.score / maxScore) * 5))]++
 
   return (
     <div className="card">
-      <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8 }}>
-        <h2 style={{ margin: 0 }}>Kết quả</h2>
-        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, alignItems: 'center' }}>
+        <div className="card-title" style={{ margin: 0 }}>
+          <span className="num">3</span>
+          <h2>Kết quả</h2>
+        </div>
+        <div className="toolbar">
           {phach && (
             <>
               <button className="btn secondary" onClick={exportPhachTemplate} disabled={!sheets.length} title="File Excel đã điền sẵn các phách đã chấm">
@@ -1733,7 +2083,7 @@ function ResultSection(props: {
               <input ref={mergeRef} type="file" accept=".xlsx,.xls,.csv" style={{ display: 'none' }} onChange={importPhach} />
             </>
           )}
-          <button className="btn" onClick={exportExcel} disabled={!sheets.length}>
+          <button className="btn success" onClick={exportExcel} disabled={!sheets.length}>
             📊 Xuất Excel
           </button>
         </div>
@@ -1744,24 +2094,25 @@ function ResultSection(props: {
           tự làm cũng được, chỉ cần có các cột Mã phách, Số phách, Họ và tên (Lớp tuỳ chọn).
         </p>
       )}
-      {mergeMsg && <p style={{ whiteSpace: 'pre-line', fontSize: 13.5 }}>{mergeMsg}</p>}
-      <div className="stat-cards" style={{ marginTop: 12 }}>
-        <div className="stat-card">
-          <div className="value">{sheets.length}</div>
-          <div className="label">Phiếu đã chấm</div>
+      {mergeMsg && <div className="notice info">{mergeMsg}</div>}
+      {sheets.length > 0 && (
+        <div className="toolbar" style={{ margin: '12px 0', gap: 6 }}>
+          <span className="small muted">Phổ điểm:</span>
+          {bins.map((n, i) => (
+            <span key={i} className={`badge ${i <= 1 ? 'wrong' : i === 2 ? 'warn' : i === 3 ? 'gray' : 'ok'}`}>
+              {Math.round(((maxScore * i) / 5) * 10) / 10}–{Math.round(((maxScore * (i + 1)) / 5) * 10) / 10}: {n}
+            </span>
+          ))}
+          <span className="small muted">· TB {avg}</span>
+          {roster.length > 0 && <span className="badge warn">{missing.length} HS chưa có phiếu</span>}
+          <span className="spacer" />
+          <label className="check small">
+            <input type="checkbox" checked={onlyWarn} onChange={(e) => setOnlyWarn(e.target.checked)} /> Chỉ bài từng có cảnh báo / sửa tay
+          </label>
         </div>
-        <div className="stat-card">
-          <div className="value">{avg}</div>
-          <div className="label">Điểm trung bình</div>
-        </div>
-        {roster.length > 0 && (
-          <div className="stat-card">
-            <div className="value">{missing.length}</div>
-            <div className="label">HS chưa có phiếu</div>
-          </div>
-        )}
-      </div>
+      )}
 
+      <div className="table-wrap">
       <table className="list">
         <thead>
           <tr>
@@ -1769,15 +2120,15 @@ function ResultSection(props: {
             {phach && <th>Phách</th>}
             <th>Họ và tên</th>
             <th>Mã đề</th>
-            <th>P1</th>
-            <th>P2</th>
-            <th>P3</th>
-            <th>Tổng</th>
+            <th className="num">P1</th>
+            <th className="num">P2</th>
+            {hasP3 && <th className="num">P3</th>}
+            <th className="num">Tổng</th>
             <th></th>
           </tr>
         </thead>
         <tbody>
-          {sorted.map((s, i) => {
+          {shown.map((s, i) => {
             const key = keys.find((k) => k.ma_de === s.ma_de)
             const isOpen = open === s.id
             const isEdit = edit?.id === s.id
@@ -1799,26 +2150,37 @@ function ResultSection(props: {
                         sửa {(s.edited_cells || []).length} ô
                       </span>
                     )}
+                    {s.read_flags && Object.keys(s.read_flags).length > 0 && (
+                      <span
+                        className="badge warn"
+                        style={{ marginLeft: 6 }}
+                        title={Object.entries(s.read_flags)
+                          .map(([id, why]) => `${flagLabel(id)}: ${why}`)
+                          .join('\n')}
+                      >
+                        ⚠ {Object.keys(s.read_flags).length} cảnh báo khi đọc
+                      </span>
+                    )}
                   </td>
                   <td>{s.ma_de}</td>
-                  <td>{s.part_scores.p1}</td>
-                  <td>{s.part_scores.p2}</td>
-                  <td>{s.part_scores.p3}</td>
-                  <td>
-                    <b>{s.score}</b>
+                  <td className="num">{s.part_scores.p1}</td>
+                  <td className="num">{s.part_scores.p2}</td>
+                  {hasP3 && <td className="num">{s.part_scores.p3}</td>}
+                  <td className="num">
+                    <span className="score">{s.score}</span>
                   </td>
-                  <td style={{ whiteSpace: 'nowrap' }}>
-                    <button className="btn secondary" style={{ padding: '3px 10px', fontSize: 12 }} onClick={() => setOpen(isOpen ? null : s.id)}>
+                  <td style={{ whiteSpace: 'nowrap', textAlign: 'right' }}>
+                    <button className="btn secondary sm" onClick={() => setOpen(isOpen ? null : s.id)}>
                       {isOpen ? 'Đóng' : 'Xem'}
                     </button>{' '}
-                    <button className="btn danger" style={{ padding: '3px 10px', fontSize: 12 }} onClick={() => remove(s)}>
+                    <button className="btn danger soft sm" onClick={() => remove(s)}>
                       Xoá
                     </button>
                   </td>
                 </tr>
                 {isOpen && (
                   <tr>
-                    <td colSpan={phach ? 9 : 8} style={{ background: '#fafafa' }}>
+                    <td colSpan={nCols} className="detail">
                       {isEdit ? (
                         <>
                           {phach && (
@@ -1874,6 +2236,7 @@ function ResultSection(props: {
                               <span style={{ color: 'var(--muted)' }}>Không có ảnh phiếu (phiếu chấm khi chưa kết nối Google Drive).</span>
                             )}
                           </p>
+                          {key && <ResultSummary cfg={cfg} answers={s.answers} answerKey={key.answers} />}
                           <PaperAnswerGrid
                             cfg={cfg}
                             value={s.answers}
@@ -1893,13 +2256,14 @@ function ResultSection(props: {
           })}
           {!sheets.length && (
             <tr>
-              <td colSpan={phach ? 9 : 8} style={{ color: 'var(--muted)' }}>
+              <td colSpan={nCols} className="muted">
                 Chưa có phiếu nào được lưu.
               </td>
             </tr>
           )}
         </tbody>
       </table>
+      </div>
       {missing.length > 0 && (
         <p style={{ fontSize: 13, color: 'var(--muted)' }}>
           <b>Chưa có phiếu:</b> {missing.map((s) => s.full_name).join(', ')}

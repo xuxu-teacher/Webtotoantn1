@@ -88,7 +88,9 @@ create table if not exists paper_batches (
   teacher_id uuid not null default auth.uid() references teachers(id) on delete cascade,
   class_id uuid references classes(id) on delete set null,
   title text not null,
-  config jsonb not null,          -- { n1, n2, n3, p1, p2, p3, tfMethod, sheet: 'school'|'class'|'grid35', identity: 'phach'|'name', paper: 'A4'|'A5' }
+  config jsonb not null,          -- { n1, n2, n3, p1, p2, p3, tfMethod, sheet: 'school'|'class'|'grid35', identity: 'phach'|'name',
+                                  --   paper: 'A4'|'A5' (khổ phiếu web tạo), bigBubbles: true (1 trang A4 ô lớn),
+                                  --   parts: 'p12'|'all' (phiếu trường: chỉ chấm Phần I + II / cả 3 phần) }
   created_at timestamptz default now()
 );
 
@@ -126,6 +128,8 @@ create table if not exists paper_sheets (
 -- Bản cập nhật: lưu mã file ảnh phiếu trong Google Drive của giáo viên (KHÔNG ảnh hưởng các phiếu đã chấm)
 alter table paper_sheets add column if not exists image_drive_id text;
 alter table paper_sheets add column if not exists overlay_drive_id text;
+-- Bản cập nhật 2: cảnh báo máy đưa ra lúc đọc phiếu (bỏ trống, tô nhiều ô, ảnh mờ…) — để thống kê bài cần kiểm tra
+alter table paper_sheets add column if not exists read_flags jsonb not null default '{}'::jsonb;
 
 create index if not exists idx_paper_batches_teacher on paper_batches(teacher_id, created_at desc);
 create index if not exists idx_paper_keys_batch on paper_keys(batch_id);
@@ -173,3 +177,6 @@ create policy own_paper_sheets on paper_sheets for all
 grant usage on schema public to anon, authenticated;
 grant select, insert, update, delete on teachers, classes, students, paper_batches, paper_keys, paper_sheets to authenticated;
 grant execute on function is_approved(), is_admin() to authenticated;
+
+-- Làm mới bộ nhớ cấu trúc bảng của API (để cột mới dùng được ngay)
+notify pgrst, 'reload schema';

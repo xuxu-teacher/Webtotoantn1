@@ -8,8 +8,8 @@
  * chữ Đ bị đọc thành D/Ð, chữ S bị đọc thành số 5).
  */
 import { supabase } from '../lib/supabase'
-import { Gray, OmrError, SheetTemplate, applyH, readBubbles, rgbaToGray, warpRegion, BubbleRead } from './bubbleOmr'
-import { classLayout, grid35Template, schoolTemplate } from './sheetTemplates'
+import { Gray, OmrError, Pt, SheetTemplate, applyH, readBubbles, rgbaToGray, warpRegion, BubbleRead } from './bubbleOmr'
+import { ClassStyle, PaperSize, buildClassLayoutFor, classLayout, grid35Template, resolveClassPaper, schoolTemplate } from './sheetTemplates'
 
 // ---------------- KIỂU DỮ LIỆU ----------------
 
@@ -31,8 +31,25 @@ export interface PaperConfig {
   sheet?: SheetKind
   /** Nhận diện bài làm: 'phach' = mã phách + số phách (bài đã cắt phách), 'name' = họ tên viết tay */
   identity?: 'phach' | 'name'
-  /** Khổ phiếu lớp (A5 = 2 phiếu/tờ A4); tự chọn khi tạo đợt */
+  /** Khổ phiếu lớp: 'A5' = nửa trang A4 (2 phiếu/tờ), 'A4' = 1 phiếu/tờ. Đợt chấm cũ không có -> tự chọn theo số câu */
   paper?: 'A4' | 'A5'
+  /** Phiếu lớp khổ 1 trang A4: in ô tô lớn (đợt chấm tạo từ phiên bản này trở đi) */
+  bigBubbles?: boolean
+  /**
+   * Phạm vi chấm (phiếu của trường): 'p12' = chỉ chấm Phần I và Phần II (bỏ qua hẳn Phần III, khi đó n3 = 0),
+   * 'all' hoặc không có = chấm theo số câu đã khai báo.
+   */
+  parts?: 'p12' | 'all'
+}
+
+/** Chuẩn hoá cấu hình đọc từ CSDL: chỉ chấm Phần I, II thì Phần III luôn 0 câu */
+export function normalizeConfig(cfg: PaperConfig): PaperConfig {
+  return cfg.parts === 'p12' && cfg.n3 !== 0 ? { ...cfg, n3: 0 } : cfg
+}
+
+/** Đợt chấm bỏ qua Phần III (không đọc, không báo lỗi, không cộng điểm) */
+export function skipsP3(cfg: PaperConfig): boolean {
+  return cfg.parts === 'p12' || cfg.n3 === 0
 }
 
 export type SheetKind = 'school' | 'class' | 'grid35'
@@ -72,6 +89,19 @@ export interface ReadResult {
   stt?: string
   /** Ảnh phiếu đã nắn thẳng, vẽ sẵn ô máy đọc được (để giáo viên đối chiếu) */
   overlay?: string
+  /** Ảnh phiếu đã nắn thẳng, CHƯA vẽ gì (để vẽ lại lớp chấm đúng/sai theo đáp án) */
+  overlayBase?: string
+  /** Toạ độ các ô trên ảnh nắn thẳng (điểm ảnh) */
+  overlayGeo?: OverlayGeo
+}
+
+/** Hình học các ô trên ảnh đối chiếu (điểm ảnh của overlayBase) */
+export interface OverlayGeo {
+  w: number
+  h: number
+  rows: { id: CellId; part: 1 | 2; centers: Pt[]; r: number; chosen: number | null; flagged: boolean }[]
+  /** Ô ghi đáp số Phần III (chỉ phiếu lớp) */
+  p3: { q: number; x: number; y: number; w: number; h: number }[]
 }
 
 export interface PartScores {
@@ -186,6 +216,14 @@ export function paperShortEqual(ans: string, key: string): boolean {
   if (isFraction(ans.replace(/[:÷]/g, '/').replace(/\s+/g, '')) && dec >= 2) {
     const f = 10 ** dec
     return Math.abs(Math.round(a * f) - Math.round(k * f)) === 0 && Math.abs(a - k) < 0.5 / f + 1e-12
+  }
+  // đáp án nhập dạng PHÂN SỐ (2/3), học sinh ghi số thập phân đã làm tròn (0,67): đúng khi có ≥ 2 chữ số thập phân
+  // và bằng đáp án làm tròn tới đúng số chữ số đó (0,7 với đáp án 2/3 KHÔNG tính đúng)
+  const ansNorm = ans.replace(/[−–—]/g, '-').replace(/\s+/g, '').replace(/,/g, '.')
+  const decA = /^[+-]?\d*\.(\d+)$/.exec(ansNorm)?.[1]?.length ?? 0
+  if (isFraction(key.replace(/[:÷]/g, '/').replace(/\s+/g, '')) && decA >= 2) {
+    const f = 10 ** decA
+    return Math.round(k * f) === Math.round(a * f) && Math.abs(a - k) < 0.5 / f + 1e-12
   }
   return false
 }
@@ -333,7 +371,8 @@ const MINISTRY_RATIO = [0, 0.1, 0.25, 0.5, 1]
 
 const r2 = (x: number) => Math.round(x * 100) / 100
 
-export function scorePaper(ans: PaperAnswers, key: PaperAnswers, cfg: PaperConfig): PartScores {
+export function scorePaper(ans: PaperAnswers, key: PaperAnswers, cfg0: PaperConfig): PartScores {
+  const cfg = normalizeConfig(cfg0)
   const correct: Record<CellId, boolean> = {}
   let s1 = 0
   for (let i = 0; i < cfg.n1; i++) {
@@ -631,6 +670,44 @@ export function answersToText(a: PaperAnswers): string {
   return `${p1} | ${p2} | ${p3}`
 }
 
+// ---------------- PHÂN LOẠI CẢNH BÁO ----------------
+
+/** Loại cảnh báo: bỏ trống / tô nhiều ô / tô mờ - tẩy / ảnh kém / thông tin (mã đề, phách, tên) / khác */
+export type FlagKind = 'blank' | 'multi' | 'faint' | 'image' | 'info' | 'other'
+
+export const FLAG_KIND_LABEL: Record<FlagKind, string> = {
+  blank: 'Bỏ trống',
+  multi: 'Tô nhiều ô',
+  faint: 'Tô mờ / tẩy',
+  image: 'Ảnh mờ / lệch',
+  info: 'Mã đề / phách / tên',
+  other: 'Cần xem lại',
+}
+
+export function flagKind(id: CellId, why: string): FlagKind {
+  if (id === 'img' || /ảnh mờ|lệch góc|không thấy rõ|giấy cong|vị trí ô|sẫm bất thường/i.test(why)) return 'image'
+  if (id === 'made' || id === 'phach' || id === 'name' || id === 'ai') return 'info'
+  if (/^Tô \d+ ô|đậm gần như nhau|tô hết/i.test(why)) return 'multi'
+  if (/tô mờ|tẩy|tô nhạt|vết mờ/i.test(why)) return 'faint'
+  if (/không thấy ô nào|bỏ trống|^Không đọc được|trống/i.test(why)) return 'blank'
+  return 'other'
+}
+
+/** Đếm cảnh báo theo loại: { blank: 2, multi: 1, ... } */
+export function countFlagKinds(flags: Record<CellId, string>): Partial<Record<FlagKind, number>> {
+  const out: Partial<Record<FlagKind, number>> = {}
+  for (const [id, why] of Object.entries(flags)) {
+    const k = flagKind(id, why)
+    out[k] = (out[k] || 0) + 1
+  }
+  return out
+}
+
+/** Đáp án mã đề còn thiếu ô so với cấu hình hiện tại (VD đổi phạm vi chấm sang cả 3 phần) */
+export function keyIsComplete(key: PaperAnswers, cfg: PaperConfig): boolean {
+  return missingKeyCells(key, cfg).length === 0
+}
+
 // ======================================================================
 // PHIẾU TÔ Ô (phiếu trường / phiếu lớp do web tạo)
 //   Phần I, II: đọc ô tô bằng xử lý ảnh (bubbleOmr.ts) — không dùng AI.
@@ -644,7 +721,7 @@ export function isBubbleSheet(cfg: PaperConfig): boolean {
 export function templateFor(cfg: PaperConfig): SheetTemplate {
   if (cfg.sheet === 'school') return schoolTemplate()
   if (cfg.sheet === 'grid35') return grid35Template()
-  return classLayout({ n1: cfg.n1, n2: cfg.n2, n3: cfg.n3 }, cfg.paper).template
+  return classLayout({ n1: cfg.n1, n2: cfg.n2, n3: cfg.n3 }, cfg.paper, cfg.bigBubbles).template
 }
 
 /** "01" = "1"; mã phách viết hoa, bỏ khoảng trắng — dùng để so khớp phách */
@@ -721,6 +798,25 @@ function mismatchHint(g: Gray, cfg: PaperConfig): string {
   const G35 = 'PHIẾU 35 CÂU (chữ A B C D trong ô, không có ô vuông đen)'
   const go = (name: string) => `Bấm "Đổi loại phiếu" ở đầu trang, chọn ${name}, rồi bấm Đọc lại.`
   if (cfg.sheet === 'class') {
+    // phiếu web tạo nhưng in theo KHỔ khác (nửa trang / 1 trang / ô lớn) với khổ đợt chấm đang dùng
+    const counts = { n1: cfg.n1, n2: cfg.n2, n3: cfg.n3 }
+    const cur = resolveClassPaper(counts, cfg.paper, cfg.bigBubbles)
+    const variants: { size: PaperSize; style: ClassStyle; label: string }[] = [
+      { size: 'A5', style: 'std', label: 'Nửa trang A4' },
+      { size: 'A4', style: 'xl', label: '1 trang A4 (ô lớn)' },
+      { size: 'A4', style: 'big', label: '1 trang A4 (ô lớn)' },
+      { size: 'A4', style: 'std', label: '1 trang A4 (ô chuẩn)' },
+      { size: 'A4', style: 'compact', label: '1 trang A4 (bố cục gọn)' },
+    ]
+    for (const v of variants) {
+      if (v.size === cur.size && v.style === cur.style) continue
+      try {
+        if (readBubbles(g, buildClassLayoutFor(counts, v.size, v.style).template, { n1: Math.min(1, cfg.n1), n2: 0 }).quality >= 0.9)
+          return `Phiếu này in theo khổ "${v.label}", khác khổ của đợt chấm. Bấm "Khổ phiếu" ở đầu trang, chọn đúng khổ đã in rồi bấm Đọc lại.`
+      } catch {
+        /* thử khổ khác */
+      }
+    }
     if (isSchool()) return `Ảnh này là ${SCHOOL}, nhưng đợt chấm đang chọn "Phiếu tô ô do web tạo". ${go('phiếu của trường')}`
     if (isGrid35()) return `Ảnh này là ${G35}, nhưng đợt chấm đang chọn "Phiếu tô ô do web tạo". ${go('phiếu 35 câu')}`
   } else if (cfg.sheet === 'school') {
@@ -732,9 +828,9 @@ function mismatchHint(g: Gray, cfg: PaperConfig): string {
 }
 
 /** Ghép vùng đầu phiếu + Phần III (đã nắn thẳng) thành 1 ảnh JPEG gửi AI */
-function handwritingImage(g: Gray, br: BubbleRead, t: SheetTemplate): string {
+function handwritingImage(g: Gray, br: BubbleRead, t: SheetTemplate, withP3: boolean): string {
   const ppu = pxPerUnit(br.H, t)
-  const parts = t.crops.map((r) => {
+  const parts = t.crops.filter((r) => withP3 || r.id !== 'p3').map((r) => {
     const scale = Math.min(1500 / r.w, ppu * 1.3)
     return grayToCanvas(warpRegion(g, br.H, r, scale))
   })
@@ -756,14 +852,32 @@ function handwritingImage(g: Gray, br: BubbleRead, t: SheetTemplate): string {
   return c.toDataURL('image/jpeg', 0.9)
 }
 
-/** Ảnh đối chiếu: phiếu nắn thẳng, khoanh xanh ô máy chọn, khoanh cam hàng cần rà */
-function overlayImage(g: Gray, br: BubbleRead, t: SheetTemplate): string {
+/**
+ * Ảnh đối chiếu: phiếu nắn thẳng, khoanh xanh ô máy chọn, khoanh cam hàng cần rà.
+ * Trả kèm ảnh nền (chưa vẽ) + toạ độ ô để giao diện vẽ lại lớp chấm đúng/sai khi đã có đáp án.
+ */
+function overlayImage(g: Gray, br: BubbleRead, t: SheetTemplate): { overlay: string; base: string; geo: OverlayGeo } {
   const f = t.frame
-  const scale = Math.min(900 / f.w, pxPerUnit(br.H, t) * 1.2)
+  // ảnh đủ nét để phóng to soi lỗi (cạnh dài ~1300 px)
+  const scale = Math.min(1300 / Math.max(f.w, f.h * 0.75), pxPerUnit(br.H, t) * 1.2)
   const c = grayToCanvas(warpRegion(g, br.H, f, scale))
+  const base = c.toDataURL('image/jpeg', 0.85)
   const ctx = c.getContext('2d')!
   const X = (x: number) => (x - f.x) * scale
   const Y = (y: number) => (y - f.y) * scale
+  const geo: OverlayGeo = {
+    w: c.width,
+    h: c.height,
+    rows: br.detail.map((d) => ({
+      id: d.row.part === 1 ? `1.${d.row.q}` : `2.${d.row.q}${'abcd'[d.row.sub ?? 0]}`,
+      part: d.row.part,
+      centers: d.centers.map((p) => ({ x: X(p.x), y: Y(p.y) })),
+      r: (d.row.r ?? t.bubbleR) * scale,
+      chosen: d.chosen,
+      flagged: d.flagged,
+    })),
+    p3: (t.p3Boxes || []).map((b) => ({ q: b.q, x: X(b.x), y: Y(b.y), w: b.w * scale, h: b.h * scale })),
+  }
   for (const d of br.detail) {
     const R = (d.row.r ?? t.bubbleR) * scale
     d.centers.forEach((p, i) => {
@@ -784,7 +898,19 @@ function overlayImage(g: Gray, br: BubbleRead, t: SheetTemplate): string {
       }
     })
   }
-  return c.toDataURL('image/jpeg', 0.82)
+  return { overlay: c.toDataURL('image/jpeg', 0.82), base, geo }
+}
+
+/** Độ nghiêng (độ) và độ méo phối cảnh của ảnh so với phiếu — để cảnh báo ảnh chụp lệch góc */
+function photoSkew(H: number[], t: SheetTemplate): { tilt: number; persp: number } {
+  const [TL, TR, BL, BR] = t.corners.map((p) => applyH(H, p))
+  const tilt = Math.abs((Math.atan2(TR.y - TL.y, TR.x - TL.x) * 180) / Math.PI)
+  const left = Math.hypot(BL.x - TL.x, BL.y - TL.y),
+    right = Math.hypot(BR.x - TR.x, BR.y - TR.y)
+  const top = Math.hypot(TR.x - TL.x, TR.y - TL.y),
+    bottom = Math.hypot(BR.x - BL.x, BR.y - BL.y)
+  const persp = Math.max(left / right, right / left, top / bottom, bottom / top)
+  return { tilt: Math.min(tilt, 360 - tilt), persp }
 }
 
 async function callOmrRaw(body: Record<string, unknown>) {
@@ -870,12 +996,23 @@ export async function readBubbleSheet(
   answers.p1 = br.p1
   answers.p2 = br.p2
   const flags: Record<CellId, string> = { ...br.flags }
+  // Ảnh mờ / chụp lệch góc: độ khớp khung phiếu thấp -> mọi ô đọc được đều kém chắc chắn, bắt giáo viên đối chiếu
+  const okQ = t.kind === 'grid' ? 0.97 : 0.9
+  const sk = photoSkew(br.H, t)
+  if (br.quality < okQ || sk.persp > 1.35) {
+    const why: string[] = []
+    if (br.quality < okQ) why.push(`độ khớp khung phiếu ${Math.round(br.quality * 100)}%`)
+    if (sk.persp > 1.35) why.push('chụp xiên mạnh')
+    else if (sk.tilt > 25 && sk.tilt < 65) why.push(`nghiêng ${Math.round(sk.tilt)}°`)
+    flags['img'] = `Ảnh mờ hoặc chụp lệch góc (${why.join(', ')}) — đối chiếu kĩ các ô trên ảnh, nên chụp lại thẳng và rõ hơn`
+  }
   // ảnh xám GIỮ mực đỏ: số phách / điểm thường viết mực đỏ (ảnh dùng đọc ô tô đã xoá mực đỏ của giáo viên chấm)
   const gc = rgbaToGray(rgba, w, h, 2200, false)
-  const overlay = overlayImage(gc, br, t)
+  const ov = overlayImage(gc, br, t)
+  const withP3 = !skipsP3(cfg) && cfg.n3 > 0
 
-  const img = handwritingImage(gc, br, t).replace(/^data:image\/\w+;base64,/, '')
-  const body = { image: img, mode: 'fields', kind: cfg.sheet, n1: cfg.n1, n2: cfg.n2, n3: cfg.n3 }
+  const img = handwritingImage(gc, br, t, withP3).replace(/^data:image\/\w+;base64,/, '')
+  const body = { image: img, mode: 'fields', kind: cfg.sheet, n1: cfg.n1, n2: cfg.n2, n3: withP3 ? cfg.n3 : 0 }
   let fields: FieldsRead | null = null
   let checked = false
   let aiError = ''
@@ -917,7 +1054,7 @@ export async function readBubbleSheet(
     answers.p3 = fields.p3
     Object.assign(flags, fields.flags)
   } else {
-    flags['ai'] = `Chưa đọc được phần viết tay (mã đề${cfg.sheet === 'class' ? ', họ tên' : ', phách'}${cfg.n3 ? ', Phần III' : ''}): ${aiError.replace(/\.+$/, '')}. ${cfg.n2 ? 'Phần I, II' : 'Phần trắc nghiệm'} vẫn đã đọc xong — cô nhập tay phần còn lại hoặc bấm Đọc lại sau.`
+    flags['ai'] = `Chưa đọc được phần viết tay (mã đề${cfg.sheet === 'class' ? ', họ tên' : ', phách'}${withP3 ? ', Phần III' : ''}): ${aiError.replace(/\.+$/, '')}. ${cfg.n2 ? 'Phần I, II' : 'Phần trắc nghiệm'} vẫn đã đọc xong — cô nhập tay phần còn lại hoặc bấm Đọc lại sau.`
   }
   return {
     name: fields?.name || '',
@@ -930,7 +1067,9 @@ export async function readBubbleSheet(
     flags,
     note: fields?.note || '',
     model: fields ? `Ô tô: xử lý ảnh · Chữ viết: ${fields.model}` : 'Ô tô: xử lý ảnh',
-    overlay,
+    overlay: ov.overlay,
+    overlayBase: ov.base,
+    overlayGeo: ov.geo,
     checked,
   }
 }
